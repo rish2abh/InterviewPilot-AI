@@ -1,0 +1,16 @@
+{
+  "version": "1.0.0",
+  "enabled": true,
+  "name": "Validate JSON Output Contracts",
+  "description": "Each agent must validate all required keys in output\n\n",
+  "when": {
+    "type": "fileEdited",
+    "patterns": [
+      "agents/*.py"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "When an agent file is saved, check that after json.loads() \nthere is key validation. Required keys per file:\n\nresearcher.py → must have all 8:\ncompany, role, interview_rounds, key_topics, difficulty,\nculture_keywords, known_question_types, red_flags_to_test\n\nquestion_generator.py → must check:\n- result has 'questions' key\n- len(result['questions']) == TOTAL_QUESTIONS (10)\n- each question has: id, category, question, \n  ideal_keywords, difficulty, follow_ups, scoring_hint\n\nevaluator.py → must have all 6:\nscores, total, verdict, feedback, \nmissing_keywords, trigger_follow_up\nAlso verify: total == sum of scores values\nIf wrong, recalculate: result['total'] = sum(scores.values())\n\ncoach.py → must have all 11:\noverall_score, hiring_probability, \nhiring_probability_percent, strongest_category, \nweakest_category, category_averages, top_3_strengths, \ntop_3_improvements, critical_moment, overall_verdict, \nnext_interview_tip\n\nIf validation missing, add validate_{agent}_output(result) \nthat raises ValueError listing missing keys."
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "hooks": [
+    {
+      "name": "On Save Lint Check",
+      "description": "Checks for common mistakes on every save",
+      "enabled": true,
+      "when": {
+        "type": "fileEdited",
+        "patterns": [
+          "agents/*.py",
+          "core/*.py",
+          "ui/*.py"
+        ]
+      },
+      "instructions": "When any Python file is saved, check for these 5 issues and fix them automatically: 1) Any import of a library NOT in this approved list [google-generativeai, streamlit, python-dotenv, sqlite3, uuid, datetime, json, time, re] — flag it with a comment # WARNING: unapproved library and notify me. 2) Any hardcoded API key string (looks like 'AIza...') — replace with os.environ.get('GEMINI_API_KEY') and add import os. 3) Any bare except clause (except:) — replace with except Exception as e:. 4) Any print statement that prints user data or API keys — add a comment warning. 5) Any function longer than 50 lines — add a comment suggesting it be split. Report what was found and fixed."
+    }
+  ]
+}

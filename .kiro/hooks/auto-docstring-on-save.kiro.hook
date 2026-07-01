@@ -1,0 +1,17 @@
+{
+  "hooks": [
+    {
+      "name": "Auto Docstring on Save",
+      "description": "Every function must have a docstring explaining what it does",
+      "enabled": true,
+      "when": {
+        "type": "fileEdited",
+        "patterns": [
+          "agents/*.py",
+          "core/*.py"
+        ]
+      },
+      "instructions": "When a Python file in agents/ or core/ is saved, scan every function definition (def ...). If a function does not have a docstring (the first statement inside the function is not a string literal), add a concise docstring that describes: 1) what the function does in one sentence, 2) its parameters with types, 3) what it returns. Infer purpose from the function name and parameter names. Do NOT modify any existing docstrings. Do NOT change any function logic or business rules. Only add missing docstrings."
+    }
+  ]
+}

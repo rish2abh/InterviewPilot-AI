@@ -1,0 +1,35 @@
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "C:\\Users\\ASUS\\Desktop\\Projects\\Mock Test"
+      ],
+      "disabled": false,
+      "autoApprove": [
+        "read_file",
+        "list_directory",
+        "search_files",
+        "get_file_info"
+      ]
+    },
+    "memory": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-memory"
+      ],
+      "disabled": false,
+      "autoApprove": [
+        "create_entities",
+        "create_relations",
+        "add_observations",
+        "search_nodes",
+        "read_graph",
+        "open_nodes"
+      ]
+    }
+  }
+}

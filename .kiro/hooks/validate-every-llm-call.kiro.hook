@@ -1,0 +1,16 @@
+{
+  "hooks": [
+    {
+      "name": "Validate Every LLM Call",
+      "description": "Every LLM call must use safe_llm_call pattern with retry and JSON stripping",
+      "enabled": true,
+      "when": {
+        "type": "fileEdited",
+        "patterns": [
+          "agents/*.py"
+        ]
+      },
+      "instructions": "When any file in agents/ is saved, find every call to model.generate_content(). For each one, verify ALL of these are present: 1) It is inside a try/except block with at least 2 attempts (for attempt in range(2)), 2) The response text is stripped of markdown: re.sub(r'```json\\s*', '', text) and re.sub(r'```\\s*', '', text), 3) json.loads() is called on the cleaned text, 4) On json.JSONDecodeError in attempt 0: time.sleep(RATE_LIMIT_SLEEP) is called then prompt has extra instruction appended: 'RETURN ONLY RAW JSON. NO TEXT BEFORE OR AFTER.', 5) Token usage is logged: print(f'[AgentName] Tokens: {response.usage_metadata}'). If any of these are missing, add them. Do not change business logic. Do not change what the prompt says. Only add the missing safety wrapper code."
+    }
+  ]
+}

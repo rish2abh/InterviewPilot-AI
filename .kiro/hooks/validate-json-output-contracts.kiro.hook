@@ -1,0 +1,19 @@
+{
+  "hooks": [
+    {
+      "name": "Validate JSON Output Contracts",
+      "description": "Each agent must validate its output has all required keys",
+      "enabled": true,
+      "when": {
+        "type": "fileEdited",
+        "patterns": [
+          "agents/researcher.py",
+          "agents/question_generator.py",
+          "agents/evaluator.py",
+          "agents/coach.py"
+        ]
+      },
+      "instructions": "When an agent file is saved, check that after json.loads() parses the LLM response, there is validation code checking for required keys. Required keys per file: researcher.py must check for [company, role, interview_rounds, key_topics, difficulty, culture_keywords, known_question_types, red_flags_to_test]. question_generator.py must check that result has 'questions' key and len(result['questions']) == 10 and each question has [id, category, question, ideal_keywords, difficulty, follow_ups, scoring_hint]. evaluator.py must check for [scores, total, verdict, feedback, missing_keywords, trigger_follow_up] and verify scores has [relevance, depth, structure, examples] and total == sum of all score values (recalculate if wrong). coach.py must check for [overall_score, hiring_probability, hiring_probability_percent, strongest_category, weakest_category, category_averages, top_3_strengths, top_3_improvements, critical_moment, overall_verdict, next_interview_tip]. If validation is missing, add it as a function called validate_{agent_name}_output(result) that raises ValueError with a clear message listing which keys are missing."
+    }
+  ]
+}

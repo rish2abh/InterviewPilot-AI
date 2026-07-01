@@ -1,0 +1,18 @@
+{
+  "version": "1.0.0",
+  "enabled": true,
+  "name": "No Magic Numbers",
+  "description": " All numeric literals must use named constants from config.py",
+  "when": {
+    "type": "fileEdited",
+    "patterns": [
+      "agents/*.py",
+      "core/*.py",
+      "ui/*.py"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "When any Python file is saved, find and replace these \nhardcoded numbers with constants from core.config:\n- time.sleep(4) → time.sleep(RATE_LIMIT_SLEEP)\n- time.sleep(8) → time.sleep(RATE_LIMIT_SLEEP * 2)\n- score < 12 or score > 12 → WEAK_SCORE_THRESHOLD\n- len(x) < 50 → MIN_ANSWER_LENGTH\n- max_output_tokens: 500 → MAX_TOKENS_SIMPLE\n- max_output_tokens: 1000 → MAX_TOKENS_COMPLEX\n- max_output_tokens: 1500 → MAX_TOKENS_REPORT\n- range(10) or == 10 for questions → TOTAL_QUESTIONS\n- >= 2 or == 2 for follow ups → MAX_FOLLOW_UPS\nAfter replacing, add missing imports from core.config \nat top of file if not already there. Never change logic."
+  }
+}

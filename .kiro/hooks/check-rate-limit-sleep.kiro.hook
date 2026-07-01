@@ -1,0 +1,16 @@
+{
+  "version": "1.0.0",
+  "enabled": true,
+  "name": "Check Rate Limit Sleep",
+  "description": "Ensure sleep exists between consecutive LLM calls\n",
+  "when": {
+    "type": "fileEdited",
+    "patterns": [
+      "agents/*.py"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "When any agent file is saved, find every function that \nmakes more than one LLM call or calls another agent \nfunction. Verify time.sleep(RATE_LIMIT_SLEEP) exists \nbetween each consecutive call. If missing, add it. \nNever add sleep before the very first LLM call in a \nfunction. Never change any business logic. Ensure \nRATE_LIMIT_SLEEP is imported from core.config."
+  }
+}

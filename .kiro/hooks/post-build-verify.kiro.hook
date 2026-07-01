@@ -1,0 +1,13 @@
+{
+  "version": "1.0.0",
+  "enabled": true,
+  "name": "Post-Build Verify",
+  "description": "Title:       Post-Build Verify\n",
+  "when": {
+    "type": "agentStop"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "After completing any task, verify:\n1. No new imports were added that aren't in approved list\n2. All new functions have docstrings\n3. No hardcoded secrets or API keys\n4. All new LLM calls follow safe_llm_call pattern\nReport any violations found."
+  }
+}

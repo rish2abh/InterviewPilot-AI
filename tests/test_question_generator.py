@@ -1,0 +1,1353 @@
+"""
+tests/test_question_generator.py — Unit tests for agents/question_generator.py
+
+This file is the single test module for the Question Generator Agent.
+Tests are appended in task order (Task 9, 10, 11, 12, …).
+
+Task 12: Unit tests — retry loop in generate_questions
+  Requirement: 2.2, 2.4, 6.1–6.3
+"""
+
+import time
+import unittest
+from unittest.mock import MagicMock, call, patch
+
+import pytest
+
+from agents.question_generator import (
+    QuestionGenerationError,
+    generate_questions,
+)
+from core.config import (
+    FOLLOW_UP_COUNT,
+    RATE_LIMIT_SLEEP,
+    TOTAL_QUESTIONS,
+)
+
+# ---------------------------------------------------------------------------
+# Shared test fixtures / helpers
+# ---------------------------------------------------------------------------
+
+# Minimal valid research_data dict with all 8 required keys.
+VALID_RESEARCH = {
+    "company": "Acme Corp",
+    "role": "Software Engineer",
+    "interview_rounds": "3",
+    "key_topics": "Python, system design",
+    "difficulty": "medium",
+    "culture_keywords": "innovation, teamwork",
+    "known_question_types": "behavioural, technical",
+    "red_flags_to_test": "ownership, communication",
+}
+
+VALID_API_KEY = "test-api-key"
+VALID_SESSION_ID = "session-uuid-1234"
+
+
+def _make_question(category: str, index: int = 0) -> dict:
+    """Return a minimal valid Question_Dict for the given category."""
+    return {
+        "id": f"llm-id-{index}",
+        "category": category,
+        "question": "Tell me about a challenging project you worked on recently?",
+        "ideal_keywords": ["architecture", "trade-offs", "delivery"],
+        "difficulty": index + 1,
+        "follow_ups": [
+            "Can you elaborate on the trade-offs you made?",
+            "What would you do differently next time?",
+        ],
+        "scoring_hint": "Look for evidence of ownership and technical depth.",
+    }
+
+
+def _make_valid_10_questions() -> list[dict]:
+    """
+    Return exactly 10 valid questions matching the required distribution:
+    4 technical, 3 behavioral, 2 situational, 1 curveball.
+    """
+    distribution = (
+        ["technical"] * 4
+        + ["behavioral"] * 3
+        + ["situational"] * 2
+        + ["curveball"] * 1
+    )
+    return [_make_question(cat, i) for i, cat in enumerate(distribution)]
+
+
+def _make_questions_with_bad_category(bad_index: int = 0) -> list[dict]:
+    """
+    Return 10 questions where the question at bad_index has an invalid category.
+    The remaining 9 questions keep the correct distribution minus one technical.
+    """
+    qs = _make_valid_10_questions()
+    qs[bad_index]["category"] = "invalid_category_xyz"
+    return qs
+
+
+# ---------------------------------------------------------------------------
+# Task 12: Retry loop in generate_questions
+# ---------------------------------------------------------------------------
+
+
+class TestGenerateQuestionsRetryLoop:
+    """Unit tests for the 2-attempt outer retry loop in generate_questions.
+
+    All tests mock:
+      - agents.question_generator._safe_llm_call  (control LLM output)
+      - core.database.save_questions              (avoid DB writes)
+      - time.sleep                                 (track sleep calls)
+    """
+
+    # -----------------------------------------------------------------------
+    # Test 1: LLM returns 9 questions on attempt 0, 10 questions on attempt 1
+    #         → function returns list of 10
+    # -----------------------------------------------------------------------
+    def test_retry_on_wrong_count_succeeds_on_second_attempt(self) -> None:
+        """LLM returns 9 questions on attempt 0, 10 on attempt 1 → returns 10."""
+        nine_questions = _make_valid_10_questions()[:9]
+        ten_questions = _make_valid_10_questions()
+
+        with (
+            patch("agents.question_generator._safe_llm_call") as mock_llm,
+            patch("agents.question_generator.save_questions"),
+            patch("time.sleep"),
+        ):
+            mock_llm.side_effect = [
+                {"questions": nine_questions},   # attempt 0 → wrong count
+                {"questions": ten_questions},    # attempt 1 → correct
+            ]
+
+            result = generate_questions(VALID_RESEARCH, VALID_SESSION_ID, VALID_API_KEY)
+
+        assert isinstance(result, list)
+        assert len(result) == TOTAL_QUESTIONS
+
+    # -----------------------------------------------------------------------
+    # Test 2: LLM always returns 9 questions → QuestionGenerationError raised
+    # -----------------------------------------------------------------------
+    def test_always_wrong_count_raises_error(self) -> None:
+        """LLM returns 9 questions on both attempts → QuestionGenerationError."""
+        nine_questions = _make_valid_10_questions()[:9]
+
+        with (
+            patch("agents.question_generator._safe_llm_call") as mock_llm,
+            patch("agents.question_generator.save_questions"),
+            patch("time.sleep"),
+        ):
+            mock_llm.return_value = {"questions": nine_questions}
+
+            with pytest.raises(QuestionGenerationError) as exc_info:
+                generate_questions(VALID_RESEARCH, VALID_SESSION_ID, VALID_API_KEY)
+
+        assert "9" in str(exc_info.value) or "count" in str(exc_info.value).lower()
+
+    # -----------------------------------------------------------------------
+    # Test 3: LLM returns invalid category on attempt 0, valid on attempt 1
+    #         → returns list of 10
+    # -----------------------------------------------------------------------
+    def test_retry_on_invalid_category_succeeds_on_second_attempt(self) -> None:
+        """LLM returns invalid category on attempt 0, valid on attempt 1 → returns 10."""
+        bad_questions = _make_questions_with_bad_category(bad_index=0)
+        good_questions = _make_valid_10_questions()
+
+        with (
+            patch("agents.question_generator._safe_llm_call") as mock_llm,
+            patch("agents.question_generator.save_questions"),
+            patch("time.sleep"),
+        ):
+            mock_llm.side_effect = [
+                {"questions": bad_questions},   # attempt 0 → validate_questions fails
+                {"questions": good_questions},  # attempt 1 → passes
+            ]
+
+            result = generate_questions(VALID_RESEARCH, VALID_SESSION_ID, VALID_API_KEY)
+
+        assert isinstance(result, list)
+        assert len(result) == TOTAL_QUESTIONS
+
+    # -----------------------------------------------------------------------
+    # Test 4: LLM always returns invalid distribution → QuestionGenerationError
+    # -----------------------------------------------------------------------
+    def test_always_invalid_distribution_raises_error(self) -> None:
+        """LLM always returns wrong category distribution → QuestionGenerationError."""
+        # 10 questions, all "technical" — wrong distribution
+        all_technical = [_make_question("technical", i) for i in range(TOTAL_QUESTIONS)]
+
+        with (
+            patch("agents.question_generator._safe_llm_call") as mock_llm,
+            patch("agents.question_generator.save_questions"),
+            patch("time.sleep"),
+        ):
+            mock_llm.return_value = {"questions": all_technical}
+
+            with pytest.raises(QuestionGenerationError) as exc_info:
+                generate_questions(VALID_RESEARCH, VALID_SESSION_ID, VALID_API_KEY)
+
+        error_msg = str(exc_info.value).lower()
+        assert "validation" in error_msg or "distribution" in error_msg or "category" in error_msg
+
+    # -----------------------------------------------------------------------
+    # Test 5: time.sleep(RATE_LIMIT_SLEEP) called twice when retry is triggered
+    #         (once before attempt 0 in Step 2, once before attempt 1 in retry)
+    # -----------------------------------------------------------------------
+    def test_sleep_called_twice_when_retry_triggered(self) -> None:
+        """time.sleep(RATE_LIMIT_SLEEP) is called exactly twice when a retry occurs."""
+        nine_questions = _make_valid_10_questions()[:9]
+        ten_questions = _make_valid_10_questions()
+
+        with (
+            patch("agents.question_generator._safe_llm_call") as mock_llm,
+            patch("agents.question_generator.save_questions"),
+            patch("agents.question_generator.time") as mock_time,
+        ):
+            mock_llm.side_effect = [
+                {"questions": nine_questions},  # attempt 0 → triggers retry
+                {"questions": ten_questions},   # attempt 1 → succeeds
+            ]
+
+            generate_questions(VALID_RESEARCH, VALID_SESSION_ID, VALID_API_KEY)
+
+        # Collect all sleep calls
+        sleep_calls = mock_time.sleep.call_args_list
+
+        # Both calls must use RATE_LIMIT_SLEEP
+        rate_limit_calls = [c for c in sleep_calls if c == call(RATE_LIMIT_SLEEP)]
+        assert len(rate_limit_calls) == 2, (
+            f"Expected 2 time.sleep({RATE_LIMIT_SLEEP}) calls, "
+            f"got {len(rate_limit_calls)} out of {sleep_calls}"
+        )
+
+    # -----------------------------------------------------------------------
+    # Test 6: Corrective prompt text is appended when retrying wrong count
+    # -----------------------------------------------------------------------
+    def test_corrective_prompt_appended_on_wrong_count_retry(self) -> None:
+        """When count is wrong on attempt 0, a corrective instruction is appended to the prompt on retry."""
+        nine_questions = _make_valid_10_questions()[:9]
+        ten_questions = _make_valid_10_questions()
+
+        captured_prompts: list[str] = []
+
+        def capture_llm_call(prompt, system, model, max_tokens, agent_name):
+            captured_prompts.append(prompt)
+            if len(captured_prompts) == 1:
+                return {"questions": nine_questions}   # attempt 0 — wrong count
+            return {"questions": ten_questions}        # attempt 1 — correct
+
+        with (
+            patch("agents.question_generator._safe_llm_call", side_effect=capture_llm_call),
+            patch("agents.question_generator.save_questions"),
+            patch("time.sleep"),
+        ):
+            generate_questions(VALID_RESEARCH, VALID_SESSION_ID, VALID_API_KEY)
+
+        assert len(captured_prompts) == 2, "Expected exactly 2 _safe_llm_call invocations"
+
+        original_prompt = captured_prompts[0]
+        retry_prompt = captured_prompts[1]
+
+        # The retry prompt must be longer (corrective text appended)
+        assert len(retry_prompt) > len(original_prompt), (
+            "Retry prompt should be longer than the original prompt"
+        )
+
+        # The retry prompt must contain some corrective language about count/questions
+        retry_lower = retry_prompt.lower()
+        assert (
+            str(TOTAL_QUESTIONS) in retry_prompt
+            or "exactly" in retry_lower
+            or "critical" in retry_lower
+        ), f"Retry prompt missing corrective count instruction: {retry_prompt[-200:]}"
+
+
+# ---------------------------------------------------------------------------
+# Task 9: QuestionGenerationError and input validation
+# ---------------------------------------------------------------------------
+# Requirement: 1.6, 9.4
+
+
+class TestQuestionGenerationErrorAndInputValidation:
+    """Unit tests for QuestionGenerationError and generate_questions input validation.
+
+    Covers:
+    - QuestionGenerationError is a subclass of Exception
+    - exc.message == str(exc)
+    - Missing each of the 8 required research keys raises QuestionGenerationError
+    - api_key="" raises QuestionGenerationError before time.sleep is called
+    - api_key="   " (whitespace-only) raises QuestionGenerationError
+    - Valid inputs pass input validation without raising (LLM + db mocked)
+    """
+
+    # -----------------------------------------------------------------------
+    # Exception class tests
+    # -----------------------------------------------------------------------
+
+    def test_question_generation_error_is_subclass_of_exception(self) -> None:
+        """QuestionGenerationError must be a subclass of Exception."""
+        assert issubclass(QuestionGenerationError, Exception)
+
+    def test_exc_message_equals_str_exc(self) -> None:
+        """exc.message must equal str(exc) for any message string."""
+        message = "Question_Generator_Agent: some failure occurred"
+        exc = QuestionGenerationError(message)
+        assert exc.message == str(exc)
+        assert exc.message == message
+
+    def test_exc_message_equals_str_exc_empty_string(self) -> None:
+        """exc.message == str(exc) even for an empty message string."""
+        exc = QuestionGenerationError("")
+        assert exc.message == str(exc)
+        assert exc.message == ""
+
+    def test_exc_message_equals_str_exc_multiline(self) -> None:
+        """exc.message == str(exc) for a multiline message."""
+        message = "Question_Generator_Agent: line one\nline two"
+        exc = QuestionGenerationError(message)
+        assert exc.message == str(exc)
+
+    # -----------------------------------------------------------------------
+    # Missing research keys — one test per key
+    # -----------------------------------------------------------------------
+
+    def _assert_missing_key_raises(self, key: str) -> None:
+        """Helper: remove *key* from a valid research dict, assert error raised."""
+        bad_research = {k: v for k, v in VALID_RESEARCH.items() if k != key}
+        with pytest.raises(QuestionGenerationError) as exc_info:
+            generate_questions(bad_research, VALID_SESSION_ID, VALID_API_KEY)
+        assert key in str(exc_info.value) or "missing" in str(exc_info.value).lower()
+
+    def test_missing_key_company_raises(self) -> None:
+        """Missing 'company' key raises QuestionGenerationError."""
+        self._assert_missing_key_raises("company")
+
+    def test_missing_key_role_raises(self) -> None:
+        """Missing 'role' key raises QuestionGenerationError."""
+        self._assert_missing_key_raises("role")
+
+    def test_missing_key_interview_rounds_raises(self) -> None:
+        """Missing 'interview_rounds' key raises QuestionGenerationError."""
+        self._assert_missing_key_raises("interview_rounds")
+
+    def test_missing_key_key_topics_raises(self) -> None:
+        """Missing 'key_topics' key raises QuestionGenerationError."""
+        self._assert_missing_key_raises("key_topics")
+
+    def test_missing_key_difficulty_raises(self) -> None:
+        """Missing 'difficulty' key raises QuestionGenerationError."""
+        self._assert_missing_key_raises("difficulty")
+
+    def test_missing_key_culture_keywords_raises(self) -> None:
+        """Missing 'culture_keywords' key raises QuestionGenerationError."""
+        self._assert_missing_key_raises("culture_keywords")
+
+    def test_missing_key_known_question_types_raises(self) -> None:
+        """Missing 'known_question_types' key raises QuestionGenerationError."""
+        self._assert_missing_key_raises("known_question_types")
+
+    def test_missing_key_red_flags_to_test_raises(self) -> None:
+        """Missing 'red_flags_to_test' key raises QuestionGenerationError."""
+        self._assert_missing_key_raises("red_flags_to_test")
+
+    # -----------------------------------------------------------------------
+    # api_key validation — must raise BEFORE time.sleep is called
+    # -----------------------------------------------------------------------
+
+    def test_empty_api_key_raises_before_sleep(self) -> None:
+        """api_key='' raises QuestionGenerationError before time.sleep is called."""
+        with (
+            patch("agents.question_generator.time") as mock_time,
+        ):
+            with pytest.raises(QuestionGenerationError) as exc_info:
+                generate_questions(VALID_RESEARCH, VALID_SESSION_ID, "")
+
+        # time.sleep must NOT have been called
+        mock_time.sleep.assert_not_called()
+        assert "api_key" in str(exc_info.value).lower() or "non-empty" in str(exc_info.value).lower()
+
+    def test_whitespace_only_api_key_raises(self) -> None:
+        """api_key='   ' (whitespace-only) raises QuestionGenerationError."""
+        with pytest.raises(QuestionGenerationError) as exc_info:
+            generate_questions(VALID_RESEARCH, VALID_SESSION_ID, "   ")
+        assert "api_key" in str(exc_info.value).lower() or "non-empty" in str(exc_info.value).lower()
+
+    def test_whitespace_only_api_key_raises_before_sleep(self) -> None:
+        """api_key whitespace-only raises QuestionGenerationError before time.sleep."""
+        with (
+            patch("agents.question_generator.time") as mock_time,
+        ):
+            with pytest.raises(QuestionGenerationError):
+                generate_questions(VALID_RESEARCH, VALID_SESSION_ID, "   ")
+
+        mock_time.sleep.assert_not_called()
+
+    # -----------------------------------------------------------------------
+    # Missing key also raises before time.sleep
+    # -----------------------------------------------------------------------
+
+    def test_missing_research_key_raises_before_sleep(self) -> None:
+        """Missing a required research key raises before time.sleep is called."""
+        bad_research = {k: v for k, v in VALID_RESEARCH.items() if k != "company"}
+        with (
+            patch("agents.question_generator.time") as mock_time,
+        ):
+            with pytest.raises(QuestionGenerationError):
+                generate_questions(bad_research, VALID_SESSION_ID, VALID_API_KEY)
+
+        mock_time.sleep.assert_not_called()
+
+    # -----------------------------------------------------------------------
+    # Valid inputs pass input validation (no raise)
+    # -----------------------------------------------------------------------
+
+    def test_valid_inputs_do_not_raise_during_input_validation(self) -> None:
+        """Valid research_data and api_key pass input validation without raising.
+
+        The LLM call and database write are mocked so the test exercises only
+        the input-validation phase (Step 1) without requiring a real API key.
+        """
+        ten_questions = _make_valid_10_questions()
+
+        with (
+            patch("agents.question_generator._safe_llm_call") as mock_llm,
+            patch("agents.question_generator.save_questions"),
+            patch("time.sleep"),
+        ):
+            mock_llm.return_value = {"questions": ten_questions}
+            # If input validation raises, this call will propagate it
+            result = generate_questions(VALID_RESEARCH, VALID_SESSION_ID, VALID_API_KEY)
+
+        # Confirm we got past validation and through the full pipeline
+        assert isinstance(result, list)
+        assert len(result) == TOTAL_QUESTIONS
+
+
+# ---------------------------------------------------------------------------
+# Task 14: Unit tests — _assign_ids_and_difficulties
+# ---------------------------------------------------------------------------
+# Requirement: 1.5, 3.2, 3.4
+
+
+import re as _re
+
+from agents.question_generator import _assign_ids_and_difficulties
+from core.config import TOTAL_QUESTIONS
+
+_UUID4_PATTERN = r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+
+
+class TestAssignIdsAndDifficulties:
+    """Unit tests for the _assign_ids_and_difficulties private helper.
+
+    Covers:
+    - LLM-returned id and difficulty values are both overwritten
+    - id is a valid UUID4 string after overwrite
+    - difficulty equals 1-based index position (Q1=1, Q10=10)
+    - All 10 questions receive unique UUIDs (no duplicates)
+    - Difficulties are exactly [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    """
+
+    def _make_questions_with_bad_ids_and_difficulties(self) -> list[dict]:
+        """Return 10 questions where id='abc' and difficulty=7 for every item."""
+        return [
+            {
+                "id": "abc",
+                "category": "technical",
+                "question": "Tell me about a challenging project you worked on?",
+                "ideal_keywords": ["architecture", "trade-offs", "delivery"],
+                "difficulty": 7,
+                "follow_ups": [
+                    "Can you walk me through your approach?",
+                    "What would you do differently?",
+                ],
+                "scoring_hint": "Look for ownership and technical depth.",
+            }
+            for _ in range(TOTAL_QUESTIONS)
+        ]
+
+    # -----------------------------------------------------------------------
+    # Test 1: LLM-returned id="abc" and difficulty=7 are both overwritten;
+    #         id is a valid UUID4, difficulty=1 for Q1
+    # -----------------------------------------------------------------------
+
+    def test_llm_id_and_difficulty_are_overwritten(self) -> None:
+        """LLM id='abc' and difficulty=7 must both be overwritten.
+
+        After _assign_ids_and_difficulties:
+        - questions[0]["id"] must be a valid UUID4 (not "abc")
+        - questions[0]["difficulty"] must be 1 (not 7)
+        """
+        questions = self._make_questions_with_bad_ids_and_difficulties()
+
+        result = _assign_ids_and_difficulties(questions)
+
+        first = result[0]
+
+        # id must no longer be "abc"
+        assert first["id"] != "abc", (
+            f'Expected id to be overwritten, but it is still "abc"'
+        )
+
+        # id must match UUID4 format
+        assert _re.match(_UUID4_PATTERN, first["id"]), (
+            f'Expected valid UUID4, got {first["id"]!r}'
+        )
+
+        # difficulty for Q1 (index 0) must be 1, not 7
+        assert first["difficulty"] == 1, (
+            f"Expected difficulty=1 for Q1, got {first['difficulty']}"
+        )
+
+    # -----------------------------------------------------------------------
+    # Test 2: All 10 questions receive unique UUIDs (no duplicates)
+    # -----------------------------------------------------------------------
+
+    def test_all_questions_get_unique_uuids(self) -> None:
+        """All 10 questions must receive distinct UUID4 strings after assignment."""
+        questions = self._make_questions_with_bad_ids_and_difficulties()
+
+        result = _assign_ids_and_difficulties(questions)
+
+        ids = [q["id"] for q in result]
+
+        # All IDs must be unique
+        assert len(ids) == len(set(ids)), (
+            f"Expected {TOTAL_QUESTIONS} unique UUIDs, but found duplicates: {ids}"
+        )
+
+        # Each ID must be a valid UUID4
+        for i, uid in enumerate(ids):
+            assert _re.match(_UUID4_PATTERN, uid), (
+                f"Question[{i}] id {uid!r} is not a valid UUID4"
+            )
+
+    # -----------------------------------------------------------------------
+    # Test 3: Difficulties are exactly [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    # -----------------------------------------------------------------------
+
+    def test_difficulties_are_sequential_1_to_10(self) -> None:
+        """After assignment, difficulties must be exactly [1, 2, ..., TOTAL_QUESTIONS]."""
+        questions = self._make_questions_with_bad_ids_and_difficulties()
+
+        result = _assign_ids_and_difficulties(questions)
+
+        difficulties = [q["difficulty"] for q in result]
+        expected = list(range(1, TOTAL_QUESTIONS + 1))
+
+        assert difficulties == expected, (
+            f"Expected difficulties {expected}, got {difficulties}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Task 11: validate_questions boundary cases
+# ---------------------------------------------------------------------------
+# Requirement: 2.3, 2.5, 4.1–4.3
+
+from agents.question_generator import validate_questions
+from core.config import MIN_QUESTION_LENGTH, TOTAL_QUESTIONS
+
+
+class TestValidateQuestionsBoundaryCases:
+    """Unit tests for validate_questions covering count, field, and distribution boundaries.
+
+    All tests call validate_questions directly with crafted inputs and assert
+    the exact (bool, str) return value shape. Constants are imported from
+    core.config — no hardcoded numbers.
+    """
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _make_valid_question(category: str, index: int = 0) -> dict:
+        """Return a fully-valid Question_Dict for the given category."""
+        return {
+            "id": f"valid-id-{index}",
+            "category": category,
+            "question": "Tell me about a challenging project you worked on recently?",
+            "ideal_keywords": ["architecture", "trade-offs", "delivery"],
+            "difficulty": max(1, min(index + 1, TOTAL_QUESTIONS)),
+            "follow_ups": [
+                "Can you elaborate on the trade-offs you made?",
+                "What would you do differently next time?",
+            ],
+            "scoring_hint": "Look for evidence of ownership and technical depth.",
+        }
+
+    @staticmethod
+    def _valid_10_questions() -> list[dict]:
+        """Return exactly 10 valid questions with the required distribution."""
+        distribution = (
+            ["technical"] * 4
+            + ["behavioral"] * 3
+            + ["situational"] * 2
+            + ["curveball"] * 1
+        )
+        return [
+            TestValidateQuestionsBoundaryCases._make_valid_question(cat, i)
+            for i, cat in enumerate(distribution)
+        ]
+
+    # ------------------------------------------------------------------
+    # Count boundary tests
+    # ------------------------------------------------------------------
+
+    def test_nine_questions_returns_false(self) -> None:
+        """List of 9 questions → (False, message containing count info)."""
+        questions = self._valid_10_questions()[:9]
+        ok, reason = validate_questions(questions)
+        assert ok is False
+        # The message must communicate expected vs actual counts
+        assert "9" in reason
+        assert str(TOTAL_QUESTIONS) in reason
+
+    def test_eleven_questions_returns_false(self) -> None:
+        """List of 11 questions → (False, message containing count info)."""
+        extra = self._valid_10_questions() + [
+            self._make_valid_question("technical", 10)
+        ]
+        ok, reason = validate_questions(extra)
+        assert ok is False
+        assert "11" in reason
+        assert str(TOTAL_QUESTIONS) in reason
+
+    # ------------------------------------------------------------------
+    # Category field tests
+    # ------------------------------------------------------------------
+
+    def test_wrong_case_category_returns_false(self) -> None:
+        """category='Technical' (wrong case) → (False, reason mentioning category)."""
+        questions = self._valid_10_questions()
+        # Replace the first question's category with the wrong-case variant
+        questions[0]["category"] = "Technical"
+        ok, reason = validate_questions(questions)
+        assert ok is False
+        reason_lower = reason.lower()
+        assert "category" in reason_lower or "technical" in reason_lower
+
+    # ------------------------------------------------------------------
+    # Question length test
+    # ------------------------------------------------------------------
+
+    def test_short_question_text_returns_false(self) -> None:
+        """question='short' (4 chars < MIN_QUESTION_LENGTH) → (False, reason)."""
+        questions = self._valid_10_questions()
+        short_text = "sho!"  # exactly 4 chars — below MIN_QUESTION_LENGTH (20)
+        assert len(short_text) < MIN_QUESTION_LENGTH
+        questions[0]["question"] = short_text
+        ok, reason = validate_questions(questions)
+        assert ok is False
+        reason_lower = reason.lower()
+        assert (
+            "question" in reason_lower
+            or str(MIN_QUESTION_LENGTH) in reason
+            or str(len(short_text)) in reason
+        )
+
+    # ------------------------------------------------------------------
+    # ideal_keywords tests
+    # ------------------------------------------------------------------
+
+    def test_empty_ideal_keywords_returns_false(self) -> None:
+        """ideal_keywords=[] → (False, reason mentioning ideal_keywords)."""
+        questions = self._valid_10_questions()
+        questions[0]["ideal_keywords"] = []
+        ok, reason = validate_questions(questions)
+        assert ok is False
+        assert "ideal_keywords" in reason.lower() or "keyword" in reason.lower()
+
+    # ------------------------------------------------------------------
+    # Difficulty boundary tests
+    # ------------------------------------------------------------------
+
+    def test_difficulty_zero_returns_false(self) -> None:
+        """difficulty=0 (below valid range 1–10) → (False, reason)."""
+        questions = self._valid_10_questions()
+        questions[0]["difficulty"] = 0
+        ok, reason = validate_questions(questions)
+        assert ok is False
+        reason_lower = reason.lower()
+        assert "difficulty" in reason_lower or "0" in reason
+
+    def test_difficulty_eleven_returns_false(self) -> None:
+        """difficulty=11 (above valid range 1–10) → (False, reason)."""
+        questions = self._valid_10_questions()
+        questions[0]["difficulty"] = 11
+        ok, reason = validate_questions(questions)
+        assert ok is False
+        reason_lower = reason.lower()
+        assert "difficulty" in reason_lower or "11" in reason
+
+    # ------------------------------------------------------------------
+    # scoring_hint test
+    # ------------------------------------------------------------------
+
+    def test_empty_scoring_hint_returns_false(self) -> None:
+        """scoring_hint='' → (False, reason mentioning scoring_hint)."""
+        questions = self._valid_10_questions()
+        questions[0]["scoring_hint"] = ""
+        ok, reason = validate_questions(questions)
+        assert ok is False
+        assert "scoring_hint" in reason.lower() or "scoring" in reason.lower()
+
+    # ------------------------------------------------------------------
+    # Valid list tests
+    # ------------------------------------------------------------------
+
+    def test_valid_10_questions_correct_distribution_returns_true(self) -> None:
+        """Valid 10-question list with correct distribution → (True, '')."""
+        questions = self._valid_10_questions()
+        ok, reason = validate_questions(questions)
+        assert ok is True
+        assert reason == ""
+
+    def test_valid_10_questions_wrong_distribution_returns_false(self) -> None:
+        """10 valid questions but wrong distribution → (False, reason).
+
+        Distribution: 5 technical, 3 behavioral, 2 situational, 0 curveball.
+        This violates the required 4/3/2/1 split.
+        """
+        distribution = (
+            ["technical"] * 5   # 5 instead of 4
+            + ["behavioral"] * 3
+            + ["situational"] * 2
+            # 0 curveball instead of 1
+        )
+        questions = [
+            self._make_valid_question(cat, i)
+            for i, cat in enumerate(distribution)
+        ]
+        ok, reason = validate_questions(questions)
+        assert ok is False
+        reason_lower = reason.lower()
+        assert (
+            "distribution" in reason_lower
+            or "category" in reason_lower
+            or "curveball" in reason_lower
+            or "technical" in reason_lower
+        )
+
+
+# ---------------------------------------------------------------------------
+# Task 13: Unit tests — _normalize_follow_ups
+# ---------------------------------------------------------------------------
+# Requirement: 5.1–5.4
+
+
+from agents.question_generator import _normalize_follow_ups, _FALLBACK_FOLLOW_UPS
+from core.config import FOLLOW_UP_COUNT
+
+
+class TestNormalizeFollowUps:
+    """Unit tests for _normalize_follow_ups called directly.
+
+    Covers:
+    - Empty list padded to FOLLOW_UP_COUNT using category fallbacks
+    - Short list (1 item) padded with one fallback
+    - Long list (> FOLLOW_UP_COUNT) trimmed to first FOLLOW_UP_COUNT items
+    - Invalid item (None) replaced with fallback, valid item kept
+    - Empty string item replaced with fallback, valid item kept
+    - Non-list follow_ups replaced entirely with fallbacks
+    - Each valid category uses its own fallback strings
+    - Unrecognised category falls back to "technical" fallbacks
+    """
+
+    # -----------------------------------------------------------------------
+    # Helper
+    # -----------------------------------------------------------------------
+
+    @staticmethod
+    def _q(category: str, follow_ups) -> dict:
+        """Build a minimal question dict with the given category and follow_ups."""
+        return {
+            "id": "test-id",
+            "category": category,
+            "question": "Tell me about a project you worked on recently?",
+            "ideal_keywords": ["one", "two", "three"],
+            "difficulty": 1,
+            "follow_ups": follow_ups,
+            "scoring_hint": "Look for ownership.",
+        }
+
+    # -----------------------------------------------------------------------
+    # Test 1: empty list padded to FOLLOW_UP_COUNT technical fallbacks
+    # -----------------------------------------------------------------------
+
+    def test_empty_list_padded_with_technical_fallbacks(self) -> None:
+        """follow_ups=[] padded to exactly FOLLOW_UP_COUNT technical fallback strings."""
+        q = self._q("technical", [])
+        result = _normalize_follow_ups(q)
+
+        assert result["follow_ups"] == _FALLBACK_FOLLOW_UPS["technical"][:FOLLOW_UP_COUNT]
+        assert len(result["follow_ups"]) == FOLLOW_UP_COUNT
+
+    # -----------------------------------------------------------------------
+    # Test 2: single valid item padded with one fallback
+    # -----------------------------------------------------------------------
+
+    def test_single_valid_item_padded_with_one_fallback(self) -> None:
+        """follow_ups with one valid item is padded to FOLLOW_UP_COUNT."""
+        valid_item = "valid follow-up question here"
+        q = self._q("technical", [valid_item])
+        result = _normalize_follow_ups(q)
+
+        assert len(result["follow_ups"]) == FOLLOW_UP_COUNT
+        assert result["follow_ups"][0] == valid_item
+        # Second slot must be the first fallback (fallback_idx starts at 0, no invalids consumed)
+        assert result["follow_ups"][1] == _FALLBACK_FOLLOW_UPS["technical"][0]
+
+    # -----------------------------------------------------------------------
+    # Test 3: list longer than FOLLOW_UP_COUNT trimmed to first FOLLOW_UP_COUNT
+    # -----------------------------------------------------------------------
+
+    def test_long_list_trimmed_to_follow_up_count(self) -> None:
+        """follow_ups with 5 items trimmed to exactly FOLLOW_UP_COUNT."""
+        items = ["q1", "q2", "q3", "q4", "q5"]
+        q = self._q("technical", items)
+        result = _normalize_follow_ups(q)
+
+        assert result["follow_ups"] == ["q1", "q2"]
+        assert len(result["follow_ups"]) == FOLLOW_UP_COUNT
+
+    # -----------------------------------------------------------------------
+    # Test 4: None item replaced with fallback; valid item kept
+    # -----------------------------------------------------------------------
+
+    def test_none_item_replaced_valid_item_kept(self) -> None:
+        """follow_ups=[None, valid_str] → [fallback, valid_str]."""
+        valid_item = "valid follow-up question here"
+        q = self._q("technical", [None, valid_item])
+        result = _normalize_follow_ups(q)
+
+        assert len(result["follow_ups"]) == FOLLOW_UP_COUNT
+        # First item was None → replaced by the first technical fallback
+        assert result["follow_ups"][0] == _FALLBACK_FOLLOW_UPS["technical"][0]
+        # Second item was valid → kept as-is
+        assert result["follow_ups"][1] == valid_item
+
+    # -----------------------------------------------------------------------
+    # Test 5: empty string replaced with fallback; valid item kept
+    # -----------------------------------------------------------------------
+
+    def test_empty_string_replaced_valid_item_kept(self) -> None:
+        """follow_ups=["", valid_str] → [fallback, valid_str]."""
+        valid_item = "valid follow-up question here"
+        q = self._q("technical", ["", valid_item])
+        result = _normalize_follow_ups(q)
+
+        assert len(result["follow_ups"]) == FOLLOW_UP_COUNT
+        # First item was "" → replaced by the first technical fallback
+        assert result["follow_ups"][0] == _FALLBACK_FOLLOW_UPS["technical"][0]
+        # Second item was valid → kept as-is
+        assert result["follow_ups"][1] == valid_item
+
+    # -----------------------------------------------------------------------
+    # Test 6: non-list follow_ups replaced entirely
+    # -----------------------------------------------------------------------
+
+    def test_non_list_follow_ups_replaced_entirely(self) -> None:
+        """follow_ups="string" (not a list) → entirely replaced with fallbacks."""
+        q = self._q("technical", "this is a string, not a list")
+        result = _normalize_follow_ups(q)
+
+        assert isinstance(result["follow_ups"], list)
+        assert len(result["follow_ups"]) == FOLLOW_UP_COUNT
+        # Both slots should be filled from the technical fallback list
+        for item in result["follow_ups"]:
+            assert isinstance(item, str) and item.strip()
+
+    # -----------------------------------------------------------------------
+    # Test 7: category "behavioral" uses behavioral fallback strings
+    # -----------------------------------------------------------------------
+
+    def test_behavioral_category_uses_behavioral_fallbacks(self) -> None:
+        """Empty follow_ups for category="behavioral" uses behavioral fallback strings."""
+        q = self._q("behavioral", [])
+        result = _normalize_follow_ups(q)
+
+        assert result["follow_ups"] == _FALLBACK_FOLLOW_UPS["behavioral"][:FOLLOW_UP_COUNT]
+        assert len(result["follow_ups"]) == FOLLOW_UP_COUNT
+
+    # -----------------------------------------------------------------------
+    # Test 8: category "situational" uses situational fallback strings
+    # -----------------------------------------------------------------------
+
+    def test_situational_category_uses_situational_fallbacks(self) -> None:
+        """Empty follow_ups for category="situational" uses situational fallback strings."""
+        q = self._q("situational", [])
+        result = _normalize_follow_ups(q)
+
+        assert result["follow_ups"] == _FALLBACK_FOLLOW_UPS["situational"][:FOLLOW_UP_COUNT]
+        assert len(result["follow_ups"]) == FOLLOW_UP_COUNT
+
+    # -----------------------------------------------------------------------
+    # Test 9: category "curveball" uses curveball fallback strings
+    # -----------------------------------------------------------------------
+
+    def test_curveball_category_uses_curveball_fallbacks(self) -> None:
+        """Empty follow_ups for category="curveball" uses curveball fallback strings."""
+        q = self._q("curveball", [])
+        result = _normalize_follow_ups(q)
+
+        assert result["follow_ups"] == _FALLBACK_FOLLOW_UPS["curveball"][:FOLLOW_UP_COUNT]
+        assert len(result["follow_ups"]) == FOLLOW_UP_COUNT
+
+    # -----------------------------------------------------------------------
+    # Test 10: unrecognised category falls back to "technical" fallbacks
+    # -----------------------------------------------------------------------
+
+    def test_unrecognised_category_falls_back_to_technical(self) -> None:
+        """Unrecognised category string uses the "technical" fallback list."""
+        q = self._q("unknown_category_xyz", [])
+        result = _normalize_follow_ups(q)
+
+        assert result["follow_ups"] == _FALLBACK_FOLLOW_UPS["technical"][:FOLLOW_UP_COUNT]
+        assert len(result["follow_ups"]) == FOLLOW_UP_COUNT
+
+
+# ---------------------------------------------------------------------------
+# Task 10: Unit tests — _safe_llm_call retry behaviour
+# ---------------------------------------------------------------------------
+# Requirement: 1.3, 9.1, 9.5, 10.3
+
+
+class TestSafeLlmCallRetryBehaviour:
+    """Unit tests for the _safe_llm_call module-private function.
+
+    Covers:
+    - invalid JSON on attempt 0 → time.sleep(RATE_LIMIT_SLEEP) → corrective
+      text appended to prompt → retry succeeds
+    - invalid JSON on both attempts → QuestionGenerationError raised with
+      "JSON parse failure"
+    - API exception on attempt 0 → time.sleep(ERROR_RETRY_SLEEP) → retry
+      succeeds
+    - API exception on both attempts → QuestionGenerationError raised with
+      original error text
+    - successful call logs "[QuestionGenerator] Success. Tokens:" to stdout
+    - max_output_tokens is passed as MAX_TOKENS_COMPLEX in generate_content
+      call args
+    """
+
+    # Import the private function and the constants we need.
+    # These are resolved once here to keep individual tests readable.
+
+    @staticmethod
+    def _import_subject():
+        """Return (_safe_llm_call, RATE_LIMIT_SLEEP, ERROR_RETRY_SLEEP, MAX_TOKENS_COMPLEX)."""
+        from agents.question_generator import _safe_llm_call
+        from core.config import ERROR_RETRY_SLEEP, MAX_TOKENS_COMPLEX, RATE_LIMIT_SLEEP
+        return _safe_llm_call, RATE_LIMIT_SLEEP, ERROR_RETRY_SLEEP, MAX_TOKENS_COMPLEX
+
+    # -----------------------------------------------------------------------
+    # Helpers
+    # -----------------------------------------------------------------------
+
+    @staticmethod
+    def _make_mock_response(text: str) -> MagicMock:
+        """Build a mock Gemini response object with .text and .usage_metadata."""
+        mock_resp = MagicMock()
+        mock_resp.text = text
+        mock_resp.usage_metadata = "prompt_token_count: 10 candidates_token_count: 50"
+        return mock_resp
+
+    # -----------------------------------------------------------------------
+    # Test 1: invalid JSON on attempt 0
+    #   → time.sleep(RATE_LIMIT_SLEEP)
+    #   → corrective text appended to prompt
+    #   → retry succeeds
+    # -----------------------------------------------------------------------
+    def test_invalid_json_attempt0_sleeps_and_retries_with_corrective_prompt(
+        self, capsys
+    ) -> None:
+        """
+        When attempt 0 returns invalid JSON:
+        - time.sleep(RATE_LIMIT_SLEEP) is called
+        - the corrective instruction is appended to the prompt on retry
+        - the call succeeds on attempt 1 and returns the parsed dict
+        """
+        _safe_llm_call, RATE_LIMIT_SLEEP, ERROR_RETRY_SLEEP, MAX_TOKENS_COMPLEX = (
+            self._import_subject()
+        )
+
+        valid_json_text = '{"result": "ok"}'
+        model = MagicMock()
+
+        captured_prompts: list[str] = []
+
+        def generate_content_side_effect(contents, generation_config):
+            # contents is [system, prompt]
+            captured_prompts.append(contents[1])
+            if len(captured_prompts) == 1:
+                # Attempt 0 — return raw text that is not valid JSON
+                return self._make_mock_response("NOT JSON AT ALL !!!")
+            # Attempt 1 — return valid JSON
+            return self._make_mock_response(valid_json_text)
+
+        model.generate_content.side_effect = generate_content_side_effect
+
+        with patch("agents.question_generator.time") as mock_time:
+            result = _safe_llm_call(
+                prompt="initial prompt",
+                system="system instruction",
+                model=model,
+                max_tokens=MAX_TOKENS_COMPLEX,
+                agent_name="QuestionGenerator",
+            )
+
+        # Return value should be the parsed dict from attempt 1
+        assert result == {"result": "ok"}
+
+        # time.sleep must have been called with RATE_LIMIT_SLEEP (for JSON retry)
+        mock_time.sleep.assert_called_once_with(RATE_LIMIT_SLEEP)
+
+        # generate_content must have been called twice
+        assert model.generate_content.call_count == 2
+
+        # The retry prompt (attempt 1) must be longer — corrective text was appended
+        assert len(captured_prompts) == 2
+        assert len(captured_prompts[1]) > len(captured_prompts[0])
+        # The canonical corrective suffix from the implementation
+        assert "RETURN ONLY RAW JSON" in captured_prompts[1]
+
+    # -----------------------------------------------------------------------
+    # Test 2: invalid JSON on both attempts → QuestionGenerationError with
+    #         "JSON parse failure" in the message
+    # -----------------------------------------------------------------------
+    def test_invalid_json_both_attempts_raises_with_json_parse_failure(self) -> None:
+        """
+        When both attempts return invalid JSON, QuestionGenerationError is raised
+        and its message contains "JSON parse failure".
+        """
+        _safe_llm_call, RATE_LIMIT_SLEEP, ERROR_RETRY_SLEEP, MAX_TOKENS_COMPLEX = (
+            self._import_subject()
+        )
+
+        model = MagicMock()
+        model.generate_content.return_value = self._make_mock_response(
+            "this is not json either"
+        )
+
+        with patch("agents.question_generator.time"):
+            with pytest.raises(QuestionGenerationError) as exc_info:
+                _safe_llm_call(
+                    prompt="some prompt",
+                    system="system",
+                    model=model,
+                    max_tokens=MAX_TOKENS_COMPLEX,
+                    agent_name="QuestionGenerator",
+                )
+
+        assert "JSON parse failure" in str(exc_info.value)
+        # generate_content must have been called exactly twice (both attempts exhausted)
+        assert model.generate_content.call_count == 2
+
+    # -----------------------------------------------------------------------
+    # Test 3: API exception on attempt 0
+    #   → time.sleep(ERROR_RETRY_SLEEP)
+    #   → retry succeeds
+    # -----------------------------------------------------------------------
+    def test_api_exception_attempt0_sleeps_error_retry_sleep_and_succeeds(self) -> None:
+        """
+        When attempt 0 raises a generic Exception (API/network error):
+        - time.sleep(ERROR_RETRY_SLEEP) is called
+        - attempt 1 succeeds and the parsed dict is returned
+        """
+        _safe_llm_call, RATE_LIMIT_SLEEP, ERROR_RETRY_SLEEP, MAX_TOKENS_COMPLEX = (
+            self._import_subject()
+        )
+
+        valid_json_text = '{"status": "success"}'
+        model = MagicMock()
+        model.generate_content.side_effect = [
+            Exception("503 Service Unavailable"),          # attempt 0 — API error
+            self._make_mock_response(valid_json_text),     # attempt 1 — success
+        ]
+
+        with patch("agents.question_generator.time") as mock_time:
+            result = _safe_llm_call(
+                prompt="prompt text",
+                system="system",
+                model=model,
+                max_tokens=MAX_TOKENS_COMPLEX,
+                agent_name="QuestionGenerator",
+            )
+
+        assert result == {"status": "success"}
+
+        # Sleep must have been called with ERROR_RETRY_SLEEP (not RATE_LIMIT_SLEEP)
+        mock_time.sleep.assert_called_once_with(ERROR_RETRY_SLEEP)
+
+        # Both attempts were made
+        assert model.generate_content.call_count == 2
+
+    # -----------------------------------------------------------------------
+    # Test 4: API exception on both attempts → QuestionGenerationError raised
+    #         with the original error text in the message
+    # -----------------------------------------------------------------------
+    def test_api_exception_both_attempts_raises_with_original_error_text(self) -> None:
+        """
+        When both attempts raise a generic Exception, QuestionGenerationError
+        is raised and its message contains the original error text.
+        """
+        _safe_llm_call, RATE_LIMIT_SLEEP, ERROR_RETRY_SLEEP, MAX_TOKENS_COMPLEX = (
+            self._import_subject()
+        )
+
+        original_error_message = "connection reset by peer: timeout after 30s"
+        model = MagicMock()
+        model.generate_content.side_effect = Exception(original_error_message)
+
+        with patch("agents.question_generator.time"):
+            with pytest.raises(QuestionGenerationError) as exc_info:
+                _safe_llm_call(
+                    prompt="prompt",
+                    system="system",
+                    model=model,
+                    max_tokens=MAX_TOKENS_COMPLEX,
+                    agent_name="QuestionGenerator",
+                )
+
+        assert original_error_message in str(exc_info.value)
+        # Both attempts must have been made
+        assert model.generate_content.call_count == 2
+
+    # -----------------------------------------------------------------------
+    # Test 5: successful call logs "[QuestionGenerator] Success. Tokens:" to
+    #         stdout — captured via capsys
+    # -----------------------------------------------------------------------
+    def test_successful_call_logs_success_tokens_to_stdout(self, capsys) -> None:
+        """
+        A successful _safe_llm_call prints a line to stdout that contains:
+        "[QuestionGenerator] Success. Tokens:"
+        """
+        _safe_llm_call, RATE_LIMIT_SLEEP, ERROR_RETRY_SLEEP, MAX_TOKENS_COMPLEX = (
+            self._import_subject()
+        )
+
+        valid_json_text = '{"key": "value"}'
+        model = MagicMock()
+        model.generate_content.return_value = self._make_mock_response(valid_json_text)
+
+        with patch("agents.question_generator.time"):
+            _safe_llm_call(
+                prompt="prompt",
+                system="system",
+                model=model,
+                max_tokens=MAX_TOKENS_COMPLEX,
+                agent_name="QuestionGenerator",
+            )
+
+        captured = capsys.readouterr()
+        assert "[QuestionGenerator] Success. Tokens:" in captured.out
+
+    # -----------------------------------------------------------------------
+    # Test 6: max_output_tokens is passed as MAX_TOKENS_COMPLEX in the
+    #         generate_content call arguments
+    # -----------------------------------------------------------------------
+    def test_max_output_tokens_passed_as_max_tokens_complex(self) -> None:
+        """
+        The generation_config dict passed to model.generate_content must
+        contain max_output_tokens == MAX_TOKENS_COMPLEX.
+        """
+        _safe_llm_call, RATE_LIMIT_SLEEP, ERROR_RETRY_SLEEP, MAX_TOKENS_COMPLEX = (
+            self._import_subject()
+        )
+
+        valid_json_text = '{"ok": true}'
+        model = MagicMock()
+        model.generate_content.return_value = self._make_mock_response(valid_json_text)
+
+        with patch("agents.question_generator.time"):
+            _safe_llm_call(
+                prompt="prompt",
+                system="system",
+                model=model,
+                max_tokens=MAX_TOKENS_COMPLEX,
+                agent_name="QuestionGenerator",
+            )
+
+        # Inspect the call arguments — generate_content(contents, generation_config=...)
+        assert model.generate_content.call_count == 1
+        _, kwargs = model.generate_content.call_args
+        generation_config = kwargs.get("generation_config")
+        assert generation_config is not None, (
+            "generation_config keyword argument was not passed to generate_content"
+        )
+        assert generation_config.get("max_output_tokens") == MAX_TOKENS_COMPLEX, (
+            f"Expected max_output_tokens={MAX_TOKENS_COMPLEX}, "
+            f"got {generation_config.get('max_output_tokens')}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Task 15: Unit tests — error_flag and database
+# ---------------------------------------------------------------------------
+# Requirement: 7.1–7.3, 8.1–8.4
+
+
+import sqlite3
+
+
+class TestErrorFlagAndDatabase:
+    """Unit tests for error_flag behaviour and database persistence in generate_questions.
+
+    All tests mock:
+      - agents.question_generator._safe_llm_call  (control LLM output)
+      - agents.question_generator.save_questions  (track calls / simulate errors)
+      - time.sleep                                 (avoid real delays)
+    All constants imported from core.config.
+    """
+
+    # -----------------------------------------------------------------------
+    # Test 1: error_flag=True → company name NOT in the prompt
+    # -----------------------------------------------------------------------
+    def test_error_flag_true_company_name_absent_from_prompt(self) -> None:
+        """error_flag=True → company name must NOT appear anywhere in the prompt
+        passed to _safe_llm_call."""
+        company_name = "Acme Corp"
+        research_with_error_flag = {**VALID_RESEARCH, "error_flag": True, "company": company_name}
+        ten_questions = _make_valid_10_questions()
+        captured_prompts: list[str] = []
+
+        def capture_prompt(prompt, system, model, max_tokens, agent_name):
+            captured_prompts.append(prompt)
+            return {"questions": ten_questions}
+
+        with (
+            patch("agents.question_generator._safe_llm_call", side_effect=capture_prompt),
+            patch("agents.question_generator.save_questions"),
+            patch("time.sleep"),
+        ):
+            generate_questions(research_with_error_flag, VALID_SESSION_ID, VALID_API_KEY)
+
+        assert captured_prompts, "Expected at least one _safe_llm_call invocation"
+        for prompt in captured_prompts:
+            assert company_name not in prompt, (
+                f"Company name '{company_name}' should NOT appear in the prompt "
+                f"when error_flag=True, but was found in: {prompt[:300]}"
+            )
+
+    # -----------------------------------------------------------------------
+    # Test 2: error_flag=False → company name IS in the prompt
+    # -----------------------------------------------------------------------
+    def test_error_flag_false_company_name_present_in_prompt(self) -> None:
+        """error_flag=False → company name MUST appear in the prompt passed to
+        _safe_llm_call."""
+        company_name = "Acme Corp"
+        research_no_error_flag = {**VALID_RESEARCH, "error_flag": False, "company": company_name}
+        ten_questions = _make_valid_10_questions()
+        captured_prompts: list[str] = []
+
+        def capture_prompt(prompt, system, model, max_tokens, agent_name):
+            captured_prompts.append(prompt)
+            return {"questions": ten_questions}
+
+        with (
+            patch("agents.question_generator._safe_llm_call", side_effect=capture_prompt),
+            patch("agents.question_generator.save_questions"),
+            patch("time.sleep"),
+        ):
+            generate_questions(research_no_error_flag, VALID_SESSION_ID, VALID_API_KEY)
+
+        assert captured_prompts, "Expected at least one _safe_llm_call invocation"
+        first_prompt = captured_prompts[0]
+        assert company_name in first_prompt, (
+            f"Company name '{company_name}' MUST appear in the prompt "
+            f"when error_flag=False, but was absent from: {first_prompt[:300]}"
+        )
+
+    # -----------------------------------------------------------------------
+    # Test 3: error_flag key absent → treated as False (no error raised)
+    # -----------------------------------------------------------------------
+    def test_error_flag_absent_treated_as_false_no_error_raised(self) -> None:
+        """When the error_flag key is absent from research_data, generate_questions
+        must succeed (treating it as False) and return 10 questions."""
+        research_no_flag = {k: v for k, v in VALID_RESEARCH.items() if k != "error_flag"}
+        # Confirm key really is absent
+        assert "error_flag" not in research_no_flag
+
+        ten_questions = _make_valid_10_questions()
+
+        with (
+            patch("agents.question_generator._safe_llm_call") as mock_llm,
+            patch("agents.question_generator.save_questions"),
+            patch("time.sleep"),
+        ):
+            mock_llm.return_value = {"questions": ten_questions}
+            result = generate_questions(research_no_flag, VALID_SESSION_ID, VALID_API_KEY)
+
+        assert isinstance(result, list)
+        assert len(result) == TOTAL_QUESTIONS
+
+    # -----------------------------------------------------------------------
+    # Test 4: save_questions called exactly once with all 10 validated questions
+    # -----------------------------------------------------------------------
+    def test_save_questions_called_exactly_once_with_all_10_questions(self) -> None:
+        """save_questions must be called exactly once and receive all TOTAL_QUESTIONS
+        validated question dicts."""
+        ten_questions = _make_valid_10_questions()
+
+        with (
+            patch("agents.question_generator._safe_llm_call") as mock_llm,
+            patch("agents.question_generator.save_questions") as mock_save,
+            patch("time.sleep"),
+        ):
+            mock_llm.return_value = {"questions": ten_questions}
+            generate_questions(VALID_RESEARCH, VALID_SESSION_ID, VALID_API_KEY)
+
+        mock_save.assert_called_once()
+        _, saved_questions = mock_save.call_args[0]
+        assert len(saved_questions) == TOTAL_QUESTIONS, (
+            f"save_questions should receive exactly {TOTAL_QUESTIONS} questions, "
+            f"got {len(saved_questions)}"
+        )
+
+    # -----------------------------------------------------------------------
+    # Test 5: save_questions raises sqlite3.Error → QuestionGenerationError
+    #         with "database write failed" in the message
+    # -----------------------------------------------------------------------
+    def test_save_questions_raises_sqlite_error_wraps_in_question_generation_error(self) -> None:
+        """When save_questions raises sqlite3.Error, generate_questions must raise
+        QuestionGenerationError with 'database write failed' in the message."""
+        ten_questions = _make_valid_10_questions()
+
+        with (
+            patch("agents.question_generator._safe_llm_call") as mock_llm,
+            patch(
+                "agents.question_generator.save_questions",
+                side_effect=sqlite3.Error("disk I/O error"),
+            ),
+            patch("time.sleep"),
+        ):
+            mock_llm.return_value = {"questions": ten_questions}
+
+            with pytest.raises(QuestionGenerationError) as exc_info:
+                generate_questions(VALID_RESEARCH, VALID_SESSION_ID, VALID_API_KEY)
+
+        assert "database write failed" in str(exc_info.value).lower(), (
+            f"Expected 'database write failed' in error message, got: {exc_info.value}"
+        )
+
+    # -----------------------------------------------------------------------
+    # Test 6: save_questions called with the correct session_id
+    # -----------------------------------------------------------------------
+    def test_save_questions_called_with_correct_session_id(self) -> None:
+        """save_questions must be called with the exact session_id passed to
+        generate_questions."""
+        ten_questions = _make_valid_10_questions()
+        expected_session_id = "test-session-id-abc-123"
+
+        with (
+            patch("agents.question_generator._safe_llm_call") as mock_llm,
+            patch("agents.question_generator.save_questions") as mock_save,
+            patch("time.sleep"),
+        ):
+            mock_llm.return_value = {"questions": ten_questions}
+            generate_questions(VALID_RESEARCH, expected_session_id, VALID_API_KEY)
+
+        mock_save.assert_called_once()
+        actual_session_id = mock_save.call_args[0][0]
+        assert actual_session_id == expected_session_id, (
+            f"save_questions called with session_id={actual_session_id!r}, "
+            f"expected {expected_session_id!r}"
+        )
