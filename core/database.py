@@ -148,6 +148,14 @@ def init_db() -> None:
                 created_at  TEXT NOT NULL
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS follow_up_tracking (
+                session_id  TEXT NOT NULL,
+                q_index     INTEGER NOT NULL,
+                count       INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (session_id, q_index)
+            )
+        """)
     conn.close()
 
 
@@ -435,5 +443,189 @@ def save_report(session_id: str, report_dict: dict) -> None:
             VALUES (?, ?, ?)
             """,
             (session_id, json.dumps(report_dict), _now_iso()),
+        )
+    conn.close()
+
+
+def update_session_state(session_id: str, new_state: str) -> None:
+    """Update the state field for an existing session.
+
+    Executes an UPDATE on the ``sessions`` table setting ``state`` to the
+    provided value.  If no row matches the given ``session_id`` the function
+    raises a ValueError (the session does not exist).
+
+    Args:
+        session_id: UUID string identifying the session to update.
+        new_state: The new state label to persist (one of the STATE_*
+            constants from ``core/config``).
+
+    Returns:
+        None
+
+    Raises:
+        ValueError: If no session with the given ``session_id`` exists
+            (i.e. ``cursor.rowcount == 0`` after the UPDATE).
+        sqlite3.Error: On any other database error.
+    """
+    conn = _get_connection()
+    with conn:
+        cursor = conn.execute(
+            "UPDATE sessions SET state = ? WHERE session_id = ?",
+            (new_state, session_id),
+        )
+    if cursor.rowcount == 0:
+        conn.close()
+        raise ValueError(
+            f"update_session_state: no session found with session_id={session_id}"
+        )
+    conn.close()
+
+
+def get_question(session_id: str, q_index: int) -> dict | None:
+    """Retrieve a single question by session and index.
+
+    Looks up the ``questions`` table by the composite key
+    ``(session_id, q_index)`` and JSON-deserializes the stored data.
+
+    Args:
+        session_id: UUID string identifying the owning session.
+        q_index: Zero-based index of the question to retrieve (0–9).
+
+    Returns:
+        A dict representing the Question_Dict (7 keys: ``id``, ``category``,
+        ``question``, ``ideal_keywords``, ``difficulty``, ``follow_ups``,
+        ``scoring_hint``) if the row exists, or ``None`` if no matching
+        row is found.
+
+    Raises:
+        sqlite3.Error: On any database error.
+    """
+    conn = _get_connection()
+    conn.row_factory = sqlite3.Row
+    cursor = conn.execute(
+        "SELECT data FROM questions WHERE session_id = ? AND q_index = ?",
+        (session_id, q_index),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if row is None:
+        return None
+    return json.loads(row["data"])
+
+
+def get_report(session_id: str) -> dict | None:
+    """Retrieve the saved final report for a session.
+
+    Looks up the ``reports`` table by ``session_id`` and JSON-deserializes
+    the stored data.
+
+    Args:
+        session_id: UUID string identifying the owning session.
+
+    Returns:
+        A dict representing the Report_Dict (11 keys) if the row exists,
+        or ``None`` if no report has been saved for this session.
+
+    Raises:
+        sqlite3.Error: On any database error.
+    """
+    conn = _get_connection()
+    conn.row_factory = sqlite3.Row
+    cursor = conn.execute(
+        "SELECT data FROM reports WHERE session_id = ?",
+        (session_id,),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if row is None:
+        return None
+    return json.loads(row["data"])
+
+
+def get_follow_up_count(session_id: str, q_index: int) -> int:
+    """Return the current follow-up count for a specific question.
+
+    Queries the ``follow_up_tracking`` table.  If no row exists for the
+    given ``(session_id, q_index)`` pair, returns 0 (indicating no
+    follow-ups have been asked yet).
+
+    Args:
+        session_id: UUID string identifying the owning session.
+        q_index: Zero-based index of the question (0–9).
+
+    Returns:
+        An integer representing the number of follow-up questions already
+        asked for this question.  Returns 0 if no tracking row exists.
+
+    Raises:
+        sqlite3.Error: On any database error.
+    """
+    conn = _get_connection()
+    conn.row_factory = sqlite3.Row
+    cursor = conn.execute(
+        "SELECT count FROM follow_up_tracking WHERE session_id = ? AND q_index = ?",
+        (session_id, q_index),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if row is None:
+        return 0
+    return row["count"]
+
+
+def increment_follow_up_count(session_id: str, q_index: int) -> None:
+    """Insert or increment the follow-up count for a specific question.
+
+    Uses an upsert pattern: if no row exists for the given
+    ``(session_id, q_index)``, inserts a new row with ``count=1``.
+    If a row already exists, increments the existing count by 1.
+
+    Args:
+        session_id: UUID string identifying the owning session.
+        q_index: Zero-based index of the question (0–9).
+
+    Returns:
+        None
+
+    Raises:
+        sqlite3.Error: On any database error.
+    """
+    conn = _get_connection()
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO follow_up_tracking (session_id, q_index, count)
+            VALUES (?, ?, 1)
+            ON CONFLICT(session_id, q_index)
+            DO UPDATE SET count = count + 1
+            """,
+            (session_id, q_index),
+        )
+    conn.close()
+
+
+def reset_follow_up_count(session_id: str, q_index: int) -> None:
+    """Reset the follow-up count for a specific question to zero.
+
+    Updates the ``follow_up_tracking`` row for the given
+    ``(session_id, q_index)`` to set ``count=0``.  If no row exists
+    (i.e. the question has never had a follow-up tracked), this is a
+    no-op — no error is raised and no row is inserted.
+
+    Args:
+        session_id: UUID string identifying the owning session.
+        q_index: Zero-based index of the question (0–9).
+
+    Returns:
+        None
+
+    Raises:
+        sqlite3.Error: On any database error.
+    """
+    conn = _get_connection()
+    with conn:
+        conn.execute(
+            "UPDATE follow_up_tracking SET count = 0 WHERE session_id = ? AND q_index = ?",
+            (session_id, q_index),
         )
     conn.close()

@@ -30,6 +30,16 @@
         "read_graph",
         "open_nodes"
       ]
+    },
+     "sqlite": {
+      "command": "uvx",
+      "args": [
+        "mcp-server-sqlite",
+        "--db-path",
+        "C:\\Users\\ASUS\\Desktop\\Projects\\Mock Test\\interview_sessions.db"
+      ],
+      "disabled": false,
+      "autoApprove": ["read_query", "list_tables", "describe_table"]
     }
   }
 }
