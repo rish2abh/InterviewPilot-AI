@@ -120,7 +120,7 @@ Tasks are grouped into three phases:
   - Test: corrective prompt text is appended when retrying wrong count
   - **Requirement**: 2.2, 2.4, 6.1–6.3
 
-- [-] 13. Write unit tests — `_normalize_follow_ups`
+- [x] 13. Write unit tests — `_normalize_follow_ups`
   - Test: `follow_ups=[]` → padded to `["<technical fallback 0>", "<technical fallback 1>"]` for `category="technical"`
   - Test: `follow_ups=["valid follow-up question here"]` → padded with one fallback
   - Test: `follow_ups=["q1", "q2", "q3", "q4", "q5"]` → trimmed to `["q1", "q2"]`
@@ -133,13 +133,13 @@ Tasks are grouped into three phases:
   - Test: unrecognised category falls back to `"technical"` fallbacks
   - **Requirement**: 5.1–5.4
 
-- [-] 14. Write unit tests — `_assign_ids_and_difficulties`
+- [x] 14. Write unit tests — `_assign_ids_and_difficulties`
   - Test: LLM-returned `id="abc"` and `difficulty=7` → both overwritten; `id` is valid UUID4, `difficulty=1` for Q1
   - Test: all 10 questions get unique UUIDs (no duplicates)
   - Test: difficulties are exactly `[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]`
   - **Requirement**: 1.5, 3.2, 3.4
 
-- [-] 15. Write unit tests — `error_flag` and database
+- [x] 15. Write unit tests — `error_flag` and database
   - Test: `error_flag=True` → company name NOT present anywhere in the prompt passed to `_safe_llm_call`
   - Test: `error_flag=False` → company name IS present in the prompt
   - Test: `error_flag` key absent → treated as False (no error raised)
@@ -148,7 +148,7 @@ Tasks are grouped into three phases:
   - Test: `save_questions` called with correct `session_id`
   - **Requirement**: 7.1–7.3, 8.1–8.4
 
-- [-] 16. Write unit tests — system prompt and rate limit compliance
+- [x] 16. Write unit tests — system prompt and rate limit compliance
   - Test: `SYSTEM_PROMPT` ends with exact required suffix: `"Return ONLY a JSON object. No markdown. No explanation. No text before or after. Pure JSON only."`
   - Test: `SYSTEM_PROMPT` contains `"questions"` key instruction
   - Test: `SYSTEM_PROMPT` contains the exact distribution: `"4 questions with category \"technical\""`, `"3 questions with category \"behavioral\""`, `"2 questions with category \"situational\""`, `"1 question with category \"curveball\""`
@@ -156,7 +156,7 @@ Tasks are grouped into three phases:
   - Test: compressed research uses `separators=(',',':')` — assert no spaces in serialised output
   - **Requirement**: 1.2, 1.4, 10.1, 10.4, 10.6
 
-- [-] 17. Write property-based test — P1: Output Count Invariant
+- [x] 17. Write property-based test — P1: Output Count Invariant
   - Use `@given(st.integers(min_value=0, max_value=20))` for LLM-returned list length
   - Mock `_safe_llm_call` to return a questions list of the generated length with valid-except-count structure
   - Assert: result is either a list of exactly `TOTAL_QUESTIONS` dicts or `QuestionGenerationError` is raised
@@ -164,7 +164,7 @@ Tasks are grouped into three phases:
   - Tag: `# Feature: question-generator-agent, Property 1: Output Count Invariant`
   - **Requirement**: 1.1, 6.1, 6.3
 
-- [-] 18. Write property-based test — P2: Category Distribution Invariant
+- [x] 18. Write property-based test — P2: Category Distribution Invariant
   - Use `st.lists(st.sampled_from(["technical", "behavioral", "situational", "curveball", "invalid"]))` for category lists
   - Mock `_safe_llm_call` to always return questions with the generated category mix
   - Assert: if a list is returned, its distribution exactly equals `_REQUIRED_DISTRIBUTION`
@@ -172,7 +172,7 @@ Tasks are grouped into three phases:
   - Tag: `# Feature: question-generator-agent, Property 2: Category Distribution Invariant`
   - **Requirement**: 2.1–2.4
 
-- [ ] 19. Write property-based test — P3: Difficulty Sequence Invariant
+- [x] 19. Write property-based test — P3: Difficulty Sequence Invariant
   - Use `st.lists(st.integers(min_value=-5, max_value=15), min_size=10, max_size=10)` for LLM-returned difficulties
   - Build a valid 10-question list with LLM-returned difficulty values, mock `_safe_llm_call`
   - Call `_assign_ids_and_difficulties` directly on the list
@@ -180,7 +180,7 @@ Tasks are grouped into three phases:
   - Tag: `# Feature: question-generator-agent, Property 3: Difficulty Sequence Invariant`
   - **Requirement**: 3.2, 3.4
 
-- [~] 20. Write property-based test — P4: Follow-Up Count Invariant
+- [x] 20. Write property-based test — P4: Follow-Up Count Invariant
   - Use `st.lists(st.one_of(st.text(), st.none(), st.integers()), min_size=0, max_size=6)` for follow_ups
   - Use `st.sampled_from(["technical", "behavioral", "situational", "curveball"])` for category
   - Call `_normalize_follow_ups` directly on a question dict with generated follow_ups
@@ -189,7 +189,7 @@ Tasks are grouped into three phases:
   - Tag: `# Feature: question-generator-agent, Property 4: Follow-Up Count Invariant`
   - **Requirement**: 5.1–5.4
 
-- [~] 21. Write property-based test — P5: UUID Identity Invariant
+- [x] 21. Write property-based test — P5: UUID Identity Invariant
   - Use `st.text()` for LLM-returned id values (including empty, non-UUID, valid UUID strings)
   - Build a valid 10-question list with generated id values, call `_assign_ids_and_difficulties`
   - Assert: every `id` in the result matches UUID4 format (`re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$', id)`)
@@ -197,7 +197,7 @@ Tasks are grouped into three phases:
   - Tag: `# Feature: question-generator-agent, Property 5: UUID Identity Invariant`
   - **Requirement**: 1.5
 
-- [~] 22. Write property-based test — P6: Compression Token Efficiency
+- [x] 22. Write property-based test — P6: Compression Token Efficiency
   - Use `st.fixed_dictionaries({k: st.text() for k in REQUIRED_RESEARCH_KEYS})` for research_data
   - Capture the prompt passed to `_safe_llm_call` via mock side effect
   - Assert: prompt contains `json.dumps(research_data, separators=(',',':'))`
@@ -205,7 +205,7 @@ Tasks are grouped into three phases:
   - Tag: `# Feature: question-generator-agent, Property 6: Compression Token Efficiency`
   - **Requirement**: 1.2
 
-- [~] 23. Write property-based test — P7: Rate Limit Compliance
+- [x] 23. Write property-based test — P7: Rate Limit Compliance
   - Use `st.booleans()` for whether retry is triggered (mock LLM to succeed or fail on first attempt)
   - Mock `time.sleep` and capture all calls
   - Assert: `time.sleep(RATE_LIMIT_SLEEP)` is always the first `time.sleep` call in any invocation
@@ -213,7 +213,7 @@ Tasks are grouped into three phases:
   - Tag: `# Feature: question-generator-agent, Property 7: Rate Limit Compliance`
   - **Requirement**: 1.4, 6.2
 
-- [~] 24. Write property-based test — P8: Input Validation Completeness
+- [x] 24. Write property-based test — P8: Input Validation Completeness
   - Use `st.frozensets(st.sampled_from(list(REQUIRED_RESEARCH_KEYS)), min_size=1)` for key subsets to remove
   - For each non-empty subset of required keys: remove those keys from a valid research_data dict
   - Assert: `QuestionGenerationError` is raised before any `time.sleep` or LLM call
@@ -222,7 +222,7 @@ Tasks are grouped into three phases:
   - Tag: `# Feature: question-generator-agent, Property 8: Input Validation Completeness`
   - **Requirement**: 1.6, 9.1
 
-- [~] 25. Write property-based test — P9: Database Persistence Completeness
+- [x] 25. Write property-based test — P9: Database Persistence Completeness
   - Use `st.sampled_from([sqlite3.Error, ValueError, RuntimeError])` for exception type
   - Mock `save_questions` to raise the generated exception
   - Assert: `QuestionGenerationError` is raised (not the original exception type directly)
@@ -231,7 +231,7 @@ Tasks are grouped into three phases:
   - Tag: `# Feature: question-generator-agent, Property 9: Database Persistence Completeness`
   - **Requirement**: 7.1–7.3
 
-- [~] 26. Write property-based test — P10: Error Flag Isolation
+- [x] 26. Write property-based test — P10: Error Flag Isolation
   - Use `st.booleans()` for `error_flag`
   - Use `st.text(min_size=1)` for company name
   - Capture prompt via mock side effect on `_safe_llm_call`
@@ -240,7 +240,7 @@ Tasks are grouped into three phases:
   - Tag: `# Feature: question-generator-agent, Property 10: Error Flag Isolation`
   - **Requirement**: 8.1–8.4
 
-- [~] 27. Run the full test suite and confirm all tests pass
+- [x] 27. Run the full test suite and confirm all tests pass
   - Run `pytest tests/test_question_generator.py -v` from the project root
   - Confirm 0 failures and 0 errors
   - Confirm all property tests complete `max_examples=100` without shrinking to a failure

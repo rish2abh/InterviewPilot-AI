@@ -1754,3 +1754,540 @@ def test_difficulty_sequence_invariant(difficulties: list[int]) -> None:
             f"but got {result[i]['difficulty']} "
             f"(LLM-returned value was {difficulties[i]})"
         )
+
+
+# ---------------------------------------------------------------------------
+# Task 20: Property-based test — P4: Follow-Up Count Invariant
+# ---------------------------------------------------------------------------
+# Requirement: 5.1–5.4
+
+# Feature: question-generator-agent, Property 4: Follow-Up Count Invariant
+@settings(max_examples=100)
+@given(
+    follow_ups=st.lists(
+        st.one_of(st.text(), st.none(), st.integers()),
+        min_size=0,
+        max_size=6,
+    ),
+    category=st.sampled_from(["technical", "behavioral", "situational", "curveball"]),
+)
+def test_p4_follow_up_count_invariant(follow_ups: list, category: str) -> None:
+    """P4: Regardless of what follow_ups the LLM returns (wrong types, wrong
+    length, None items, integers, empty strings), after calling
+    _normalize_follow_ups the question always has exactly FOLLOW_UP_COUNT
+    follow-ups and every item is a non-empty string.
+
+    **Validates: Requirements 5.1, 5.2, 5.3, 5.4**
+    """
+    # Build a question dict with the generated follow_ups and category.
+    question: dict = {
+        "id": "test-id-0",
+        "category": category,
+        "question": "Tell me about a challenging project you worked on recently?",
+        "ideal_keywords": ["architecture", "trade-offs", "delivery"],
+        "difficulty": 1,
+        "follow_ups": follow_ups,
+        "scoring_hint": "Look for evidence of ownership and technical depth.",
+    }
+
+    # Call _normalize_follow_ups directly — no LLM or mocking needed.
+    result = _normalize_follow_ups(question)
+
+    # Assert: follow_ups length is exactly FOLLOW_UP_COUNT.
+    assert len(result["follow_ups"]) == FOLLOW_UP_COUNT, (
+        f"Expected exactly {FOLLOW_UP_COUNT} follow_ups, "
+        f"got {len(result['follow_ups'])} for input {follow_ups!r}"
+    )
+
+    # Assert: every item in follow_ups is a non-empty string.
+    for i, item in enumerate(result["follow_ups"]):
+        assert isinstance(item, str), (
+            f"follow_ups[{i}] must be a string, got {type(item).__name__}: {item!r}"
+        )
+        assert item.strip() != "", (
+            f"follow_ups[{i}] must be non-empty, got empty/whitespace string"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Task 21: Property-based test — P5: UUID Identity Invariant
+# ---------------------------------------------------------------------------
+# Requirement: 1.5
+
+import re
+
+
+# Feature: question-generator-agent, Property 5: UUID Identity Invariant
+@settings(max_examples=100)
+@given(
+    llm_ids=st.lists(
+        st.text(),
+        min_size=10,
+        max_size=10,
+    )
+)
+def test_p5_uuid_identity_invariant(llm_ids: list[str]) -> None:
+    """P5: Regardless of what id values the LLM returns (empty, non-UUID,
+    valid UUID strings, arbitrary text), after calling _assign_ids_and_difficulties
+    every question's id is a valid UUID4 string and none of the returned ids
+    match the original LLM-supplied id values.
+
+    **Validates: Requirements 1.5**
+    """
+    _UUID4_RE = re.compile(
+        r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+    )
+
+    # Build a valid 10-question list with the generated id values.
+    distribution = (
+        ["technical"] * 4
+        + ["behavioral"] * 3
+        + ["situational"] * 2
+        + ["curveball"] * 1
+    )
+    questions: list[dict] = [
+        {
+            "id": llm_ids[i],
+            "category": distribution[i],
+            "question": "Tell me about a challenging project you worked on recently?",
+            "ideal_keywords": ["architecture", "trade-offs", "delivery"],
+            "difficulty": i + 1,
+            "follow_ups": [
+                "Can you walk me through your approach?",
+                "What would you do differently?",
+            ],
+            "scoring_hint": "Look for ownership and technical depth.",
+        }
+        for i in range(TOTAL_QUESTIONS)
+    ]
+
+    # Store the original LLM-supplied ids before mutation.
+    original_ids = [q["id"] for q in questions]
+
+    # Call _assign_ids_and_difficulties directly — no LLM or mocking needed.
+    result = _assign_ids_and_difficulties(questions)
+
+    # Assert: every id in the result matches UUID4 format.
+    for i in range(TOTAL_QUESTIONS):
+        assert _UUID4_RE.match(result[i]["id"]), (
+            f"questions[{i}]['id'] = {result[i]['id']!r} does not match UUID4 format "
+            f"(LLM-supplied value was {original_ids[i]!r})"
+        )
+
+    # Assert: no returned id matches the LLM-supplied id for that position.
+    for i in range(TOTAL_QUESTIONS):
+        assert result[i]["id"] != original_ids[i], (
+            f"questions[{i}]['id'] should differ from the LLM-supplied value "
+            f"{original_ids[i]!r}, but they are the same"
+        )
+
+# ---------------------------------------------------------------------------
+# Task 24: Property-based test — P8: Input Validation Completeness
+# ---------------------------------------------------------------------------
+# Requirement: 1.6, 9.1
+
+from hypothesis import given, settings
+from hypothesis import strategies as st
+
+# The 8 required research keys that generate_questions validates in Step 1.
+REQUIRED_RESEARCH_KEYS = frozenset({
+    "company", "role", "interview_rounds", "key_topics",
+    "difficulty", "culture_keywords", "known_question_types",
+    "red_flags_to_test",
+})
+
+
+# Feature: question-generator-agent, Property 8: Input Validation Completeness
+@settings(max_examples=100)
+@given(
+    keys_to_remove=st.frozensets(
+        st.sampled_from(list(REQUIRED_RESEARCH_KEYS)), min_size=1
+    ),
+)
+def test_p8_missing_keys_raises_before_sleep(keys_to_remove: frozenset) -> None:
+    """P8: For any non-empty subset of the 8 required research keys removed
+    from a valid research_data dict, generate_questions raises
+    QuestionGenerationError before time.sleep is ever called.
+
+    **Validates: Requirements 1.6, 9.1**
+    """
+    from unittest.mock import patch
+
+    # Build research_data with the specified keys removed.
+    incomplete_research = {
+        k: v for k, v in VALID_RESEARCH.items() if k not in keys_to_remove
+    }
+
+    with patch("agents.question_generator.time") as mock_time:
+        with pytest.raises(QuestionGenerationError):
+            generate_questions(incomplete_research, VALID_SESSION_ID, VALID_API_KEY)
+
+    # time.sleep must NOT have been called — validation happens before sleep.
+    mock_time.sleep.assert_not_called()
+
+
+# Feature: question-generator-agent, Property 8: Input Validation Completeness
+@settings(max_examples=100)
+@given(
+    api_key=st.from_regex(r'^\s*$', fullmatch=True),
+)
+def test_p8_invalid_api_key_raises_before_sleep(api_key: str) -> None:
+    """P8: For any empty or whitespace-only api_key string, generate_questions
+    raises QuestionGenerationError before time.sleep is ever called.
+
+    **Validates: Requirements 1.6, 9.1**
+    """
+    from unittest.mock import patch
+
+    with patch("agents.question_generator.time") as mock_time:
+        with pytest.raises(QuestionGenerationError):
+            generate_questions(VALID_RESEARCH, VALID_SESSION_ID, api_key)
+
+    # time.sleep must NOT have been called — validation happens before sleep.
+    mock_time.sleep.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Task 23: Property-based test — P7: Rate Limit Compliance
+# ---------------------------------------------------------------------------
+# Requirement: 1.4, 6.2
+
+from hypothesis import given, settings
+from hypothesis import strategies as st
+
+from agents.question_generator import generate_questions
+from core.config import RATE_LIMIT_SLEEP, TOTAL_QUESTIONS
+
+
+# Feature: question-generator-agent, Property 7: Rate Limit Compliance
+@settings(max_examples=100)
+@given(trigger_retry=st.booleans())
+def test_p7_rate_limit_compliance(trigger_retry: bool) -> None:
+    """P7: Rate Limit Compliance.
+
+    - time.sleep(RATE_LIMIT_SLEEP) is always the first time.sleep call in any
+      invocation of generate_questions (the unconditional Step 2 sleep).
+    - When a retry is triggered (LLM returns wrong count on first attempt),
+      a second time.sleep(RATE_LIMIT_SLEEP) call is made before the retry.
+
+    **Validates: Requirements 1.4, 6.2**
+    """
+    ten_questions = _make_valid_10_questions()
+    nine_questions = _make_valid_10_questions()[:9]
+
+    if trigger_retry:
+        # First call returns 9 questions (triggers retry), second returns 10
+        llm_side_effect = [
+            {"questions": nine_questions},
+            {"questions": ten_questions},
+        ]
+    else:
+        # First call returns 10 valid questions (no retry needed)
+        llm_side_effect = [
+            {"questions": ten_questions},
+        ]
+
+    with (
+        patch("agents.question_generator._safe_llm_call") as mock_llm,
+        patch("agents.question_generator.save_questions"),
+        patch("agents.question_generator.time") as mock_time,
+    ):
+        mock_llm.side_effect = llm_side_effect
+
+        generate_questions(VALID_RESEARCH, VALID_SESSION_ID, VALID_API_KEY)
+
+    # Collect all time.sleep calls
+    sleep_calls = mock_time.sleep.call_args_list
+
+    # Assert: time.sleep(RATE_LIMIT_SLEEP) is always the first sleep call
+    assert len(sleep_calls) >= 1, (
+        "time.sleep must be called at least once (Step 2 unconditional sleep)"
+    )
+    assert sleep_calls[0] == call(RATE_LIMIT_SLEEP), (
+        f"First time.sleep call must be call({RATE_LIMIT_SLEEP}), "
+        f"got {sleep_calls[0]}"
+    )
+
+    if trigger_retry:
+        # When retry is triggered, expect exactly 2 RATE_LIMIT_SLEEP calls
+        rate_limit_calls = [c for c in sleep_calls if c == call(RATE_LIMIT_SLEEP)]
+        assert len(rate_limit_calls) == 2, (
+            f"Expected 2 time.sleep({RATE_LIMIT_SLEEP}) calls when retry is triggered, "
+            f"got {len(rate_limit_calls)}. All sleep calls: {sleep_calls}"
+        )
+    else:
+        # When no retry, expect exactly 1 RATE_LIMIT_SLEEP call (Step 2 only)
+        rate_limit_calls = [c for c in sleep_calls if c == call(RATE_LIMIT_SLEEP)]
+        assert len(rate_limit_calls) == 1, (
+            f"Expected exactly 1 time.sleep({RATE_LIMIT_SLEEP}) call when no retry, "
+            f"got {len(rate_limit_calls)}. All sleep calls: {sleep_calls}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Task 22: Property-based test — P6: Compression Token Efficiency
+# ---------------------------------------------------------------------------
+# Requirement: 1.2
+
+import json
+
+from hypothesis import given, settings, assume
+from hypothesis import strategies as st
+
+from agents.question_generator import generate_questions
+from core.config import TOTAL_QUESTIONS
+
+# The 8 required keys that must exist in research_data.
+_REQUIRED_RESEARCH_KEYS = [
+    "company",
+    "role",
+    "interview_rounds",
+    "key_topics",
+    "difficulty",
+    "culture_keywords",
+    "known_question_types",
+    "red_flags_to_test",
+]
+
+
+# Feature: question-generator-agent, Property 6: Compression Token Efficiency
+@settings(max_examples=100)
+@given(
+    research_data=st.fixed_dictionaries(
+        {k: st.text(min_size=1) for k in _REQUIRED_RESEARCH_KEYS}
+    )
+)
+def test_p6_compression_token_efficiency(research_data: dict) -> None:
+    """P6: For any research_data dict passed to generate_questions, the LLM
+    prompt always includes ``json.dumps(research_data, separators=(',',':'))``
+    (compact, no whitespace). The uncompressed default JSON form (with spaces)
+    is never passed to the LLM.
+
+    **Validates: Requirements 1.2**
+    """
+    # Build expected compressed and uncompressed forms.
+    compressed = json.dumps(research_data, separators=(",", ":"))
+    spaced = json.dumps(research_data)
+
+    # Build a valid 10-question response for the mock.
+    distribution = (
+        ["technical"] * 4
+        + ["behavioral"] * 3
+        + ["situational"] * 2
+        + ["curveball"] * 1
+    )
+
+    def _make_q(i: int) -> dict:
+        return {
+            "id": f"llm-id-{i}",
+            "category": distribution[i],
+            "question": "Tell me about a challenging project you worked on recently?",
+            "ideal_keywords": ["architecture", "trade-offs", "delivery"],
+            "difficulty": i + 1,
+            "follow_ups": [
+                "Can you walk me through your approach step by step?",
+                "What would you do differently next time?",
+            ],
+            "scoring_hint": "Look for evidence of ownership and technical depth.",
+        }
+
+    valid_questions = [_make_q(i) for i in range(TOTAL_QUESTIONS)]
+
+    # Capture the prompt passed to _safe_llm_call via side_effect.
+    captured_prompts: list[str] = []
+
+    def capture_llm_call(prompt, system, model, max_tokens, agent_name):
+        captured_prompts.append(prompt)
+        return {"questions": valid_questions}
+
+    with (
+        patch("agents.question_generator._safe_llm_call", side_effect=capture_llm_call),
+        patch("agents.question_generator.save_questions"),
+        patch("agents.question_generator.time.sleep"),
+    ):
+        generate_questions(research_data, "session-id-test", "test-api-key")
+
+    # At least one prompt must have been captured.
+    assert captured_prompts, "Expected at least one _safe_llm_call invocation"
+    prompt = captured_prompts[0]
+
+    # Assert: the compressed form IS present in the prompt.
+    assert compressed in prompt, (
+        f"Expected compressed JSON to appear in the prompt.\n"
+        f"Compressed: {compressed!r}\n"
+        f"Prompt snippet: {prompt[:500]!r}"
+    )
+
+    # Assert: the uncompressed (spaced) form is NOT present — only when
+    # the two serialized forms are actually different.
+    if spaced != compressed:
+        assert spaced not in prompt, (
+            f"Prompt must NOT contain the uncompressed (spaced) JSON form.\n"
+            f"Spaced: {spaced!r}\n"
+            f"Prompt snippet: {prompt[:500]!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Task 25: Property-based test — P9: Database Persistence Completeness
+# ---------------------------------------------------------------------------
+# Requirement: 7.1–7.3
+
+import sqlite3
+
+from hypothesis import given, settings
+from hypothesis import strategies as st
+from unittest.mock import patch, call
+
+from agents.question_generator import generate_questions, QuestionGenerationError
+from core.config import TOTAL_QUESTIONS
+
+
+# Feature: question-generator-agent, Property 9: Database Persistence Completeness
+@settings(max_examples=100)
+@given(
+    trigger_db_error=st.booleans(),
+    exc_type=st.sampled_from([sqlite3.Error, ValueError, RuntimeError]),
+)
+def test_p9_database_persistence_completeness(
+    trigger_db_error: bool,
+    exc_type: type,
+) -> None:
+    """P9: When save_questions raises any exception, generate_questions wraps it
+    in a QuestionGenerationError with "database write failed" in the message.
+    When save_questions succeeds, it must be called once with all TOTAL_QUESTIONS questions.
+
+    **Validates: Requirements 7.1, 7.2, 7.3**
+    """
+    valid_questions = _make_valid_10_questions()
+
+    def mock_llm_call(prompt, system, model, max_tokens, agent_name):
+        return {"questions": valid_questions}
+
+    if trigger_db_error:
+        # Failure path: save_questions raises the generated exception type
+        with (
+            patch("agents.question_generator._safe_llm_call", side_effect=mock_llm_call),
+            patch(
+                "agents.question_generator.save_questions",
+                side_effect=exc_type("simulated db failure"),
+            ),
+            patch("agents.question_generator.time.sleep"),
+        ):
+            with pytest.raises(QuestionGenerationError) as exc_info:
+                generate_questions(VALID_RESEARCH, VALID_SESSION_ID, VALID_API_KEY)
+
+            # Must NOT be the original exception type directly
+            assert type(exc_info.value) is QuestionGenerationError
+            # Message must contain "database write failed"
+            assert "database write failed" in str(exc_info.value)
+    else:
+        # Success path: save_questions does not raise
+        with (
+            patch("agents.question_generator._safe_llm_call", side_effect=mock_llm_call),
+            patch("agents.question_generator.save_questions") as mock_save,
+            patch("agents.question_generator.time.sleep"),
+        ):
+            result = generate_questions(VALID_RESEARCH, VALID_SESSION_ID, VALID_API_KEY)
+
+            # save_questions must be called exactly once
+            mock_save.assert_called_once()
+
+            # The call must include TOTAL_QUESTIONS questions
+            call_args = mock_save.call_args
+            saved_questions = call_args[0][1]  # second positional arg
+            assert len(saved_questions) == TOTAL_QUESTIONS, (
+                f"Expected save_questions to be called with {TOTAL_QUESTIONS} questions, "
+                f"got {len(saved_questions)}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Task 26: Property-based test — P10: Error Flag Isolation
+# ---------------------------------------------------------------------------
+# Requirement: 8.1–8.4
+
+from hypothesis import given, settings
+from hypothesis import strategies as st
+
+from agents.question_generator import generate_questions
+from core.config import TOTAL_QUESTIONS
+
+
+# Feature: question-generator-agent, Property 10: Error Flag Isolation
+@settings(max_examples=100)
+@given(
+    error_flag=st.booleans(),
+    company_name=st.text(
+        alphabet=st.characters(categories=("Lu",)),
+        min_size=5,
+    ),
+)
+def test_p10_error_flag_isolation(error_flag: bool, company_name: str) -> None:
+    """P10: Error Flag Isolation.
+
+    - When error_flag=True, the company name must NOT appear in the user_prompt
+      sent to the LLM (isolation of company-specific data).
+    - When error_flag=False (or absent), the company name IS in the user_prompt.
+    - In both cases the result is a list of 10 dicts each with the standard
+      7-key structure.
+
+    **Validates: Requirements 8.1, 8.2, 8.3, 8.4**
+    """
+    # Prefix with a unique marker to avoid accidental substring matches with
+    # boilerplate prompt text (numbers, common English words, etc.)
+    unique_company = f"XYZCOMPANY_{company_name}_ENDXYZ"
+
+    # Build research_data with all 8 required keys, overriding company and error_flag
+    research_data = {
+        "company": unique_company,
+        "role": "Software Engineer",
+        "interview_rounds": "3",
+        "key_topics": "Python, system design",
+        "difficulty": "medium",
+        "culture_keywords": "innovation, teamwork",
+        "known_question_types": "behavioural, technical",
+        "red_flags_to_test": "ownership, communication",
+        "error_flag": error_flag,
+    }
+
+    # Capture the prompt passed to _safe_llm_call
+    captured_prompts: list[str] = []
+
+    def capture_llm_call(prompt, system, model, max_tokens, agent_name):
+        captured_prompts.append(prompt)
+        return {"questions": _make_valid_10_questions()}
+
+    with (
+        patch("agents.question_generator._safe_llm_call", side_effect=capture_llm_call),
+        patch("agents.question_generator.save_questions"),
+        patch("time.sleep"),
+    ):
+        result = generate_questions(research_data, "session-id-test", "test-api-key")
+
+    # At least one prompt must have been captured
+    assert captured_prompts, "Expected at least one _safe_llm_call invocation"
+    user_prompt = captured_prompts[0]
+
+    # Assert: error_flag isolation of company name in prompt
+    if error_flag:
+        assert unique_company not in user_prompt, (
+            f"When error_flag=True, company name {unique_company!r} must NOT "
+            f"appear in the user_prompt."
+        )
+    else:
+        assert unique_company in user_prompt, (
+            f"When error_flag=False, company name {unique_company!r} must "
+            f"appear in the user_prompt."
+        )
+
+    # Assert: result is always a list of 10 dicts with the standard 7-key structure
+    expected_keys = {"id", "category", "question", "ideal_keywords",
+                     "difficulty", "follow_ups", "scoring_hint"}
+    assert isinstance(result, list)
+    assert len(result) == TOTAL_QUESTIONS
+    for q in result:
+        assert isinstance(q, dict)
+        assert set(q.keys()) == expected_keys, (
+            f"Expected keys {expected_keys}, got {set(q.keys())}"
+        )
