@@ -35,16 +35,16 @@ GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
 # ---------------------------------------------------------------------------
 
 # The only permitted model for every LLM call in this project.
-GEMINI_MODEL: str = "gemini-2.0-flash-exp"
+GEMINI_MODEL: str = "gemini-2.5-flash"
 
 # Max output tokens for simple/fast agents (Evaluator).
-MAX_TOKENS_SIMPLE: int = 500
+MAX_TOKENS_SIMPLE: int = 1000
 
 # Max output tokens for complex generation agents (Researcher, QuestionGenerator).
-MAX_TOKENS_COMPLEX: int = 1000
+MAX_TOKENS_COMPLEX: int = 2000
 
 # Max output tokens for the long-form final report (Coach).
-MAX_TOKENS_REPORT: int = 1500
+MAX_TOKENS_REPORT: int = 3000
 
 # ---------------------------------------------------------------------------
 # 3. Rate Limiting

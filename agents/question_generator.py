@@ -174,6 +174,7 @@ def _safe_llm_call(
             config = types.GenerateContentConfig(
                 system_instruction=system,
                 max_output_tokens=max_tokens,
+                response_mime_type="application/json",
             )
             response = client.models.generate_content(
                 model=GEMINI_MODEL,
