@@ -1,18 +1,18 @@
 {
-  "hooks": [
-    {
-      "name": "On Save Lint Check",
-      "description": "Checks for common mistakes on every save",
-      "enabled": true,
-      "when": {
-        "type": "fileEdited",
-        "patterns": [
-          "agents/*.py",
-          "core/*.py",
-          "ui/*.py"
-        ]
-      },
-      "instructions": "When any Python file is saved, check for these 5 issues and fix them automatically: 1) Any import of a library NOT in this approved list [google-generativeai, streamlit, python-dotenv, sqlite3, uuid, datetime, json, time, re] — flag it with a comment # WARNING: unapproved library and notify me. 2) Any hardcoded API key string (looks like 'AIza...') — replace with os.environ.get('GEMINI_API_KEY') and add import os. 3) Any bare except clause (except:) — replace with except Exception as e:. 4) Any print statement that prints user data or API keys — add a comment warning. 5) Any function longer than 50 lines — add a comment suggesting it be split. Report what was found and fixed."
-    }
-  ]
+  "version": "1.0.0",
+  "enabled": true,
+  "name": "On Save Lint",
+  "description": "Catch common mistakes on every save",
+  "when": {
+    "type": "fileEdited",
+    "patterns": [
+      "agents/*.py",
+      "core/*.py",
+      "ui/*.py"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "When any Python file is saved, check for these issues \nand fix automatically:\n\n1. Unapproved library import → flag with comment\n   Approved only: google-generativeai, streamlit, \n   python-dotenv, sqlite3, uuid, datetime, json, time, re\n\n2. Hardcoded API key string starting with 'AIza' →\n   replace with os.environ.get('GEMINI_API_KEY')\n\n3. Bare except clause (except:) →\n   replace with except Exception as e:\n\n4. Any function over 50 lines →\n   add comment: # Consider splitting this function\n\n5. sqlite3 connection not closed after use →\n   add conn.close() in finally block\n\nReport every issue found and what was fixed."
+  }
 }

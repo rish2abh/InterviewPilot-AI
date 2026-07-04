@@ -1,16 +1,16 @@
 {
-  "hooks": [
-    {
-      "name": "Validate Every LLM Call",
-      "description": "Every LLM call must use safe_llm_call pattern with retry and JSON stripping",
-      "enabled": true,
-      "when": {
-        "type": "fileEdited",
-        "patterns": [
-          "agents/*.py"
-        ]
-      },
-      "instructions": "When any file in agents/ is saved, find every call to model.generate_content(). For each one, verify ALL of these are present: 1) It is inside a try/except block with at least 2 attempts (for attempt in range(2)), 2) The response text is stripped of markdown: re.sub(r'```json\\s*', '', text) and re.sub(r'```\\s*', '', text), 3) json.loads() is called on the cleaned text, 4) On json.JSONDecodeError in attempt 0: time.sleep(RATE_LIMIT_SLEEP) is called then prompt has extra instruction appended: 'RETURN ONLY RAW JSON. NO TEXT BEFORE OR AFTER.', 5) Token usage is logged: print(f'[AgentName] Tokens: {response.usage_metadata}'). If any of these are missing, add them. Do not change business logic. Do not change what the prompt says. Only add the missing safety wrapper code."
-    }
-  ]
+  "version": "1.0.0",
+  "enabled": true,
+  "name": "Validate Every LLM Call",
+  "description": "Every LLM call must have retry, JSON stripping, sleep\n",
+  "when": {
+    "type": "fileEdited",
+    "patterns": [
+      "agents/*.py"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "When any agent file is saved, find every call to \nmodel.generate_content(). For each one verify ALL of \nthese exist:\n1. Wrapped in try/except with for attempt in range(2)\n2. response.text checked not empty before parsing\n3. re.sub strips markdown: \n   re.sub(r'```json\\s*', '', text)\n   re.sub(r'```\\s*', '', text)\n4. json.loads() called on cleaned text\n5. On JSONDecodeError attempt 0: sleep then append \n   \"RETURN ONLY RAW JSON. NO TEXT BEFORE OR AFTER.\" \n   to prompt\n6. Token usage logged:\n   print(f\"[AgentName] Tokens: {response.usage_metadata}\")\n7. time.sleep(RATE_LIMIT_SLEEP) before call if another \n   LLM call precedes it in same function\nIf any missing, add them. Never change business logic."
+  }
 }
