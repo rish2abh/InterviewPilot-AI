@@ -227,7 +227,7 @@ class TestGenerateQuestionsRetryLoop:
 
         captured_prompts: list[str] = []
 
-        def capture_llm_call(prompt, system, model, max_tokens, agent_name):
+        def capture_llm_call(prompt, system, client, max_tokens, agent_name):
             captured_prompts.append(prompt)
             if len(captured_prompts) == 1:
                 return {"questions": nine_questions}   # attempt 0 — wrong count
@@ -950,6 +950,16 @@ class TestSafeLlmCallRetryBehaviour:
         mock_resp.usage_metadata = "prompt_token_count: 10 candidates_token_count: 50"
         return mock_resp
 
+    @staticmethod
+    def _make_mock_client(side_effect=None, return_value=None) -> MagicMock:
+        """Build a mock genai.Client with client.models.generate_content configured."""
+        mock_client = MagicMock()
+        if side_effect is not None:
+            mock_client.models.generate_content.side_effect = side_effect
+        elif return_value is not None:
+            mock_client.models.generate_content.return_value = return_value
+        return mock_client
+
     # -----------------------------------------------------------------------
     # Test 1: invalid JSON on attempt 0
     #   → time.sleep(RATE_LIMIT_SLEEP)
@@ -970,26 +980,26 @@ class TestSafeLlmCallRetryBehaviour:
         )
 
         valid_json_text = '{"result": "ok"}'
-        model = MagicMock()
 
         captured_prompts: list[str] = []
 
-        def generate_content_side_effect(contents, generation_config):
-            # contents is [system, prompt]
-            captured_prompts.append(contents[1])
+        def generate_content_side_effect(**kwargs):
+            contents = kwargs.get("contents", "")
+            captured_prompts.append(contents)
             if len(captured_prompts) == 1:
                 # Attempt 0 — return raw text that is not valid JSON
                 return self._make_mock_response("NOT JSON AT ALL !!!")
             # Attempt 1 — return valid JSON
             return self._make_mock_response(valid_json_text)
 
-        model.generate_content.side_effect = generate_content_side_effect
+        mock_client = MagicMock()
+        mock_client.models.generate_content.side_effect = generate_content_side_effect
 
         with patch("agents.question_generator.time") as mock_time:
             result = _safe_llm_call(
                 prompt="initial prompt",
                 system="system instruction",
-                model=model,
+                client=mock_client,
                 max_tokens=MAX_TOKENS_COMPLEX,
                 agent_name="QuestionGenerator",
             )
@@ -1001,7 +1011,7 @@ class TestSafeLlmCallRetryBehaviour:
         mock_time.sleep.assert_called_once_with(RATE_LIMIT_SLEEP)
 
         # generate_content must have been called twice
-        assert model.generate_content.call_count == 2
+        assert mock_client.models.generate_content.call_count == 2
 
         # The retry prompt (attempt 1) must be longer — corrective text was appended
         assert len(captured_prompts) == 2
@@ -1022,9 +1032,8 @@ class TestSafeLlmCallRetryBehaviour:
             self._import_subject()
         )
 
-        model = MagicMock()
-        model.generate_content.return_value = self._make_mock_response(
-            "this is not json either"
+        mock_client = self._make_mock_client(
+            return_value=self._make_mock_response("this is not json either")
         )
 
         with patch("agents.question_generator.time"):
@@ -1032,14 +1041,14 @@ class TestSafeLlmCallRetryBehaviour:
                 _safe_llm_call(
                     prompt="some prompt",
                     system="system",
-                    model=model,
+                    client=mock_client,
                     max_tokens=MAX_TOKENS_COMPLEX,
                     agent_name="QuestionGenerator",
                 )
 
         assert "JSON parse failure" in str(exc_info.value)
         # generate_content must have been called exactly twice (both attempts exhausted)
-        assert model.generate_content.call_count == 2
+        assert mock_client.models.generate_content.call_count == 2
 
     # -----------------------------------------------------------------------
     # Test 3: API exception on attempt 0
@@ -1057,17 +1066,16 @@ class TestSafeLlmCallRetryBehaviour:
         )
 
         valid_json_text = '{"status": "success"}'
-        model = MagicMock()
-        model.generate_content.side_effect = [
+        mock_client = self._make_mock_client(side_effect=[
             Exception("503 Service Unavailable"),          # attempt 0 — API error
             self._make_mock_response(valid_json_text),     # attempt 1 — success
-        ]
+        ])
 
         with patch("agents.question_generator.time") as mock_time:
             result = _safe_llm_call(
                 prompt="prompt text",
                 system="system",
-                model=model,
+                client=mock_client,
                 max_tokens=MAX_TOKENS_COMPLEX,
                 agent_name="QuestionGenerator",
             )
@@ -1078,7 +1086,7 @@ class TestSafeLlmCallRetryBehaviour:
         mock_time.sleep.assert_called_once_with(ERROR_RETRY_SLEEP)
 
         # Both attempts were made
-        assert model.generate_content.call_count == 2
+        assert mock_client.models.generate_content.call_count == 2
 
     # -----------------------------------------------------------------------
     # Test 4: API exception on both attempts → QuestionGenerationError raised
@@ -1094,22 +1102,23 @@ class TestSafeLlmCallRetryBehaviour:
         )
 
         original_error_message = "connection reset by peer: timeout after 30s"
-        model = MagicMock()
-        model.generate_content.side_effect = Exception(original_error_message)
+        mock_client = self._make_mock_client(
+            side_effect=Exception(original_error_message)
+        )
 
         with patch("agents.question_generator.time"):
             with pytest.raises(QuestionGenerationError) as exc_info:
                 _safe_llm_call(
                     prompt="prompt",
                     system="system",
-                    model=model,
+                    client=mock_client,
                     max_tokens=MAX_TOKENS_COMPLEX,
                     agent_name="QuestionGenerator",
                 )
 
         assert original_error_message in str(exc_info.value)
         # Both attempts must have been made
-        assert model.generate_content.call_count == 2
+        assert mock_client.models.generate_content.call_count == 2
 
     # -----------------------------------------------------------------------
     # Test 5: successful call logs "[QuestionGenerator] Success. Tokens:" to
@@ -1125,14 +1134,15 @@ class TestSafeLlmCallRetryBehaviour:
         )
 
         valid_json_text = '{"key": "value"}'
-        model = MagicMock()
-        model.generate_content.return_value = self._make_mock_response(valid_json_text)
+        mock_client = self._make_mock_client(
+            return_value=self._make_mock_response(valid_json_text)
+        )
 
         with patch("agents.question_generator.time"):
             _safe_llm_call(
                 prompt="prompt",
                 system="system",
-                model=model,
+                client=mock_client,
                 max_tokens=MAX_TOKENS_COMPLEX,
                 agent_name="QuestionGenerator",
             )
@@ -1146,7 +1156,7 @@ class TestSafeLlmCallRetryBehaviour:
     # -----------------------------------------------------------------------
     def test_max_output_tokens_passed_as_max_tokens_complex(self) -> None:
         """
-        The generation_config dict passed to model.generate_content must
+        The config passed to client.models.generate_content must
         contain max_output_tokens == MAX_TOKENS_COMPLEX.
         """
         _safe_llm_call, RATE_LIMIT_SLEEP, ERROR_RETRY_SLEEP, MAX_TOKENS_COMPLEX = (
@@ -1154,28 +1164,29 @@ class TestSafeLlmCallRetryBehaviour:
         )
 
         valid_json_text = '{"ok": true}'
-        model = MagicMock()
-        model.generate_content.return_value = self._make_mock_response(valid_json_text)
+        mock_client = self._make_mock_client(
+            return_value=self._make_mock_response(valid_json_text)
+        )
 
         with patch("agents.question_generator.time"):
             _safe_llm_call(
                 prompt="prompt",
                 system="system",
-                model=model,
+                client=mock_client,
                 max_tokens=MAX_TOKENS_COMPLEX,
                 agent_name="QuestionGenerator",
             )
 
-        # Inspect the call arguments — generate_content(contents, generation_config=...)
-        assert model.generate_content.call_count == 1
-        _, kwargs = model.generate_content.call_args
-        generation_config = kwargs.get("generation_config")
-        assert generation_config is not None, (
-            "generation_config keyword argument was not passed to generate_content"
+        # Inspect the call arguments — client.models.generate_content(model=..., contents=..., config=...)
+        assert mock_client.models.generate_content.call_count == 1
+        _, kwargs = mock_client.models.generate_content.call_args
+        config = kwargs.get("config")
+        assert config is not None, (
+            "config keyword argument was not passed to generate_content"
         )
-        assert generation_config.get("max_output_tokens") == MAX_TOKENS_COMPLEX, (
+        assert config.max_output_tokens == MAX_TOKENS_COMPLEX, (
             f"Expected max_output_tokens={MAX_TOKENS_COMPLEX}, "
-            f"got {generation_config.get('max_output_tokens')}"
+            f"got {config.max_output_tokens}"
         )
 
 
@@ -1209,7 +1220,7 @@ class TestErrorFlagAndDatabase:
         ten_questions = _make_valid_10_questions()
         captured_prompts: list[str] = []
 
-        def capture_prompt(prompt, system, model, max_tokens, agent_name):
+        def capture_prompt(prompt, system, client, max_tokens, agent_name):
             captured_prompts.append(prompt)
             return {"questions": ten_questions}
 
@@ -1238,7 +1249,7 @@ class TestErrorFlagAndDatabase:
         ten_questions = _make_valid_10_questions()
         captured_prompts: list[str] = []
 
-        def capture_prompt(prompt, system, model, max_tokens, agent_name):
+        def capture_prompt(prompt, system, client, max_tokens, agent_name):
             captured_prompts.append(prompt)
             return {"questions": ten_questions}
 
@@ -1401,8 +1412,7 @@ def test_p1_output_count_invariant(n: int) -> None:
     with (
         patch("agents.question_generator._safe_llm_call") as mock_llm,
         patch("agents.question_generator.save_questions"),
-        patch("agents.question_generator.genai.configure"),
-        patch("agents.question_generator.genai.GenerativeModel"),
+        patch("agents.question_generator.genai.Client"),
         patch("time.sleep"),
     ):
         mock_llm.return_value = {"questions": llm_questions}
@@ -1519,17 +1529,16 @@ class TestSystemPromptAndRateLimitCompliance:
 
         with (
             patch("agents.question_generator.time.sleep") as mock_sleep,
-            patch("agents.question_generator.genai.configure"),
-            patch("agents.question_generator.genai.GenerativeModel") as mock_model_cls,
+            patch("agents.question_generator.genai.Client") as mock_client_cls,
             patch("agents.question_generator.save_questions"),
         ):
-            # Set up the mock model to return valid questions
-            mock_model = MagicMock()
-            mock_model_cls.return_value = mock_model
+            # Set up the mock client to return valid questions
+            mock_client = MagicMock()
+            mock_client_cls.return_value = mock_client
             mock_response = MagicMock()
             mock_response.text = _json.dumps({"questions": ten_questions})
             mock_response.usage_metadata = "prompt_token_count: 10 candidates_token_count: 50"
-            mock_model.generate_content.return_value = mock_response
+            mock_client.models.generate_content.return_value = mock_response
 
             generate_questions(VALID_RESEARCH, VALID_SESSION_ID, VALID_API_KEY)
 
@@ -1547,7 +1556,7 @@ class TestSystemPromptAndRateLimitCompliance:
 
         # The LLM must have been called after sleep (sleep_call_count > 0 before
         # generate_content is ever invoked — enforced by the pipeline order)
-        assert mock_model.generate_content.call_count >= 1, (
+        assert mock_client.models.generate_content.call_count >= 1, (
             "generate_content was never called"
         )
 
@@ -1563,7 +1572,7 @@ class TestSystemPromptAndRateLimitCompliance:
         ten_questions = _make_valid_10_questions()
         captured_prompts: list[str] = []
 
-        def capture_prompt(prompt, system, model, max_tokens, agent_name):
+        def capture_prompt(prompt, system, client, max_tokens, agent_name):
             captured_prompts.append(prompt)
             return {"questions": ten_questions}
 
@@ -1664,8 +1673,7 @@ def test_p2_category_distribution_invariant(categories: list[str]) -> None:
     with (
         patch("agents.question_generator._safe_llm_call", return_value=llm_response),
         patch("agents.question_generator.save_questions"),
-        patch("agents.question_generator.genai.configure"),
-        patch("agents.question_generator.genai.GenerativeModel"),
+        patch("agents.question_generator.genai.Client"),
         patch("agents.question_generator.time.sleep"),
     ):
         try:
@@ -2096,7 +2104,7 @@ def test_p6_compression_token_efficiency(research_data: dict) -> None:
     # Capture the prompt passed to _safe_llm_call via side_effect.
     captured_prompts: list[str] = []
 
-    def capture_llm_call(prompt, system, model, max_tokens, agent_name):
+    def capture_llm_call(prompt, system, client, max_tokens, agent_name):
         captured_prompts.append(prompt)
         return {"questions": valid_questions}
 
@@ -2161,7 +2169,7 @@ def test_p9_database_persistence_completeness(
     """
     valid_questions = _make_valid_10_questions()
 
-    def mock_llm_call(prompt, system, model, max_tokens, agent_name):
+    def mock_llm_call(prompt, system, client, max_tokens, agent_name):
         return {"questions": valid_questions}
 
     if trigger_db_error:
@@ -2254,7 +2262,7 @@ def test_p10_error_flag_isolation(error_flag: bool, company_name: str) -> None:
     # Capture the prompt passed to _safe_llm_call
     captured_prompts: list[str] = []
 
-    def capture_llm_call(prompt, system, model, max_tokens, agent_name):
+    def capture_llm_call(prompt, system, client, max_tokens, agent_name):
         captured_prompts.append(prompt)
         return {"questions": _make_valid_10_questions()}
 

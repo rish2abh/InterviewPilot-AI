@@ -14,7 +14,8 @@ import re
 import time
 import uuid
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 from core.config import (
     GEMINI_MODEL,
@@ -137,7 +138,7 @@ Return ONLY a JSON object. No markdown. No explanation. No text before or after.
 def _safe_llm_call(
     prompt: str,
     system: str,
-    model,
+    client: genai.Client,
     max_tokens: int,
     agent_name: str,
 ) -> dict:
@@ -157,7 +158,7 @@ def _safe_llm_call(
     Args:
         prompt: User-side prompt text sent to the model.
         system: System instruction string.
-        model: Initialised ``google.generativeai.GenerativeModel`` instance.
+        client: An initialised ``google.genai.Client`` instance.
         max_tokens: Maximum output token count to request.
         agent_name: Human-readable agent name used in log messages.
 
@@ -170,15 +171,24 @@ def _safe_llm_call(
     """
     for attempt in range(2):
         try:
-            response = model.generate_content(
-                [system, prompt],
-                generation_config={"max_output_tokens": max_tokens},
+            config = types.GenerateContentConfig(
+                system_instruction=system,
+                max_output_tokens=max_tokens,
+            )
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=prompt,
+                config=config,
             )
             text = response.text.strip()
             # Strip markdown code fences: ```json ... ``` then ``` ... ```
-            text = re.sub(r"```json\s*", "", text)
-            text = re.sub(r"```\s*", "", text)
-            text = text.strip()
+            json_fence_match = re.search(r"```json\s*(.*?)```", text, re.DOTALL)
+            if json_fence_match:
+                text = json_fence_match.group(1).strip()
+            else:
+                generic_fence_match = re.search(r"```\s*(.*?)```", text, re.DOTALL)
+                if generic_fence_match:
+                    text = generic_fence_match.group(1).strip()
             result = json.loads(text)
             print(f"[{agent_name}] Success. Tokens: {response.usage_metadata}")
             return result
@@ -484,8 +494,7 @@ def generate_questions(
     # ------------------------------------------------------------------
     # Step 4: Configure Gemini (no search grounding — researcher only)
     # ------------------------------------------------------------------
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel(model_name=GEMINI_MODEL)
+    client = genai.Client(api_key=api_key)
 
     # Build system prompt with TOTAL_QUESTIONS substituted
     system = SYSTEM_PROMPT.format(total=TOTAL_QUESTIONS)
@@ -533,7 +542,7 @@ def generate_questions(
         raw_response = _safe_llm_call(
             prompt=current_prompt,
             system=system,
-            model=model,
+            client=client,
             max_tokens=MAX_TOKENS_COMPLEX,
             agent_name="QuestionGenerator",
         )

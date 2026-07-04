@@ -14,7 +14,8 @@ import json
 import re
 import time
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 from core.config import (
     GEMINI_API_KEY,
@@ -145,8 +146,7 @@ def generate_report(session_id: str, answers: list[dict]) -> dict:  # Consider s
     # ------------------------------------------------------------------
     # Step 5: Configure Gemini + Build Prompts
     # ------------------------------------------------------------------
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel(GEMINI_MODEL)
+    client = genai.Client(api_key=GEMINI_API_KEY)
     compressed_json = json.dumps(compressed, separators=(',', ':'))
     user_prompt = (
         f"Generate a performance report for this completed mock interview session.\n\n"
@@ -158,7 +158,7 @@ def generate_report(session_id: str, answers: list[dict]) -> dict:  # Consider s
     # ------------------------------------------------------------------
     # Step 6: LLM Call
     # ------------------------------------------------------------------
-    raw = _safe_llm_call(user_prompt, SYSTEM_PROMPT, model, MAX_TOKENS_REPORT, "Coach")
+    raw = _safe_llm_call(user_prompt, SYSTEM_PROMPT, client, MAX_TOKENS_REPORT, "Coach")
 
     # ------------------------------------------------------------------
     # Step 7: Output Contract Validation
@@ -202,18 +202,28 @@ def _compress_answers(answers: list[dict]) -> list[dict]:
     return compressed
 
 
-def _safe_llm_call(prompt: str, system: str, model, max_tokens: int, agent_name: str) -> dict:
+def _safe_llm_call(prompt: str, system: str, client: genai.Client, max_tokens: int, agent_name: str) -> dict:
     """Call the Gemini model with retry logic for JSON parse failures and API errors."""
     for attempt in range(2):
         try:
-            response = model.generate_content(
-                [system, prompt],
-                generation_config={"max_output_tokens": max_tokens}
+            config = types.GenerateContentConfig(
+                system_instruction=system,
+                max_output_tokens=max_tokens,
+            )
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=prompt,
+                config=config,
             )
             text = response.text.strip()
-            text = re.sub(r'```json\s*', '', text)
-            text = re.sub(r'```\s*', '', text)
-            text = text.strip()
+            # Extract content from code fences if present
+            json_fence_match = re.search(r"```json\s*(.*?)```", text, re.DOTALL)
+            if json_fence_match:
+                text = json_fence_match.group(1).strip()
+            else:
+                generic_fence_match = re.search(r"```\s*(.*?)```", text, re.DOTALL)
+                if generic_fence_match:
+                    text = generic_fence_match.group(1).strip()
             result = json.loads(text)
             print(f"[{agent_name}] Success. Tokens: {response.usage_metadata}")
             return result

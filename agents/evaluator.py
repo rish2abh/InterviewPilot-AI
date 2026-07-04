@@ -12,9 +12,11 @@ import json
 import re
 import time
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 from core.config import (
+    GEMINI_MODEL,
     MIN_ANSWER_LENGTH,
     MAX_TOKENS_SIMPLE,
     RATE_LIMIT_SLEEP,
@@ -83,7 +85,7 @@ Return ONLY a JSON object. No markdown. No explanation. No text before or after.
 # ---------------------------------------------------------------------------
 
 
-def _safe_llm_call(prompt: str, system: str, model, max_tokens: int, agent_name: str) -> dict:
+def _safe_llm_call(prompt: str, system: str, client: genai.Client, max_tokens: int, agent_name: str) -> dict:
     """Call the Gemini model with retry logic for JSON parse failures and API errors.
 
     Attempts the call up to 2 times:
@@ -99,7 +101,7 @@ def _safe_llm_call(prompt: str, system: str, model, max_tokens: int, agent_name:
     Args:
         prompt: The user-side prompt text to send to the model.
         system: The system instruction string.
-        model: An initialised google.generativeai GenerativeModel instance.
+        client: An initialised google.genai.Client instance.
         max_tokens: Maximum number of output tokens to request.
         agent_name: Human-readable name used in log messages.
 
@@ -112,14 +114,24 @@ def _safe_llm_call(prompt: str, system: str, model, max_tokens: int, agent_name:
     """
     for attempt in range(2):
         try:
-            response = model.generate_content(
-                [system, prompt],
-                generation_config={"max_output_tokens": max_tokens}
+            config = types.GenerateContentConfig(
+                system_instruction=system,
+                max_output_tokens=max_tokens,
+            )
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=prompt,
+                config=config,
             )
             text = response.text.strip()
-            text = re.sub(r'```json\s*', '', text)
-            text = re.sub(r'```\s*', '', text)
-            text = text.strip()
+            # Extract content from code fences if present
+            json_fence_match = re.search(r"```json\s*(.*?)```", text, re.DOTALL)
+            if json_fence_match:
+                text = json_fence_match.group(1).strip()
+            else:
+                generic_fence_match = re.search(r"```\s*(.*?)```", text, re.DOTALL)
+                if generic_fence_match:
+                    text = generic_fence_match.group(1).strip()
             result = json.loads(text)
             print(f"[{agent_name}] Success. Tokens: {response.usage_metadata}")
             return result
@@ -286,8 +298,7 @@ def evaluate_answer(
     # ------------------------------------------------------------------
     # Step 3: LLM Call
     # ------------------------------------------------------------------
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-2.0-flash-exp")
+    client = genai.Client(api_key=api_key)
     user_prompt = f"""Question: {question}
 
 Ideal Keywords: {', '.join(ideal_keywords)}
@@ -296,7 +307,7 @@ Scoring Hint: {scoring_hint}
 
 Candidate Answer:
 {user_answer}"""
-    raw = _safe_llm_call(user_prompt, SYSTEM_PROMPT, model, MAX_TOKENS_SIMPLE, "Evaluator")
+    raw = _safe_llm_call(user_prompt, SYSTEM_PROMPT, client, MAX_TOKENS_SIMPLE, "Evaluator")
 
     # ------------------------------------------------------------------
     # Step 4: Subscore Clamping

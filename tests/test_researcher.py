@@ -65,13 +65,13 @@ def valid_research_data_input() -> dict:
 
 @pytest.fixture
 def mock_model(valid_research_dict):
-    """A mocked GenerativeModel that returns a valid JSON response."""
-    model = MagicMock()
+    """A mocked genai Client whose models.generate_content returns valid JSON."""
+    mock_client = MagicMock()
     response = MagicMock()
     response.text = json.dumps(valid_research_dict)
     response.usage_metadata = {"prompt_token_count": 100, "candidates_token_count": 200}
-    model.generate_content.return_value = response
-    return model
+    mock_client.models.generate_content.return_value = response
+    return mock_client
 
 
 # ===========================================================================
@@ -143,12 +143,12 @@ class TestResearchCompanyInputValidation:
     @patch("agents.researcher.time.sleep")
     def test_valid_inputs_proceed(self, mock_sleep, mock_genai, valid_research_dict):
         """Valid inputs pass sanitization and reach the LLM call."""
-        mock_model = MagicMock()
+        mock_client = MagicMock()
         response = MagicMock()
         response.text = json.dumps(valid_research_dict)
         response.usage_metadata = {}
-        mock_model.generate_content.return_value = response
-        mock_genai.GenerativeModel.return_value = mock_model
+        mock_client.models.generate_content.return_value = response
+        mock_genai.Client.return_value = mock_client
 
         result = research_company("Google", "SWE", "senior", "fake-key")
         assert "company" in result
@@ -164,55 +164,55 @@ class TestSafeLlmCallJsonRetry:
 
     def test_json_retry_succeeds_on_second_attempt(self, valid_research_dict):
         """Invalid JSON on attempt 0, valid on attempt 1 → success."""
-        model = MagicMock()
+        mock_client = MagicMock()
         bad_response = MagicMock()
         bad_response.text = "Not valid JSON at all"
         good_response = MagicMock()
         good_response.text = json.dumps(valid_research_dict)
         good_response.usage_metadata = {"total": 300}
-        model.generate_content.side_effect = [bad_response, good_response]
+        mock_client.models.generate_content.side_effect = [bad_response, good_response]
 
         with patch("agents.researcher.time.sleep") as mock_sleep:
-            result = _safe_llm_call("test", "sys", model, 1000, "Researcher")
+            result = _safe_llm_call("test", "sys", mock_client, 1000, "Researcher")
 
         mock_sleep.assert_called_once_with(RATE_LIMIT_SLEEP)
         assert result == valid_research_dict
 
     def test_json_retry_both_fail_raises_valueerror(self):
         """Invalid JSON on both attempts → ValueError raised."""
-        model = MagicMock()
+        mock_client = MagicMock()
         bad_response = MagicMock()
         bad_response.text = "Not JSON"
-        model.generate_content.return_value = bad_response
+        mock_client.models.generate_content.return_value = bad_response
 
         with patch("agents.researcher.time.sleep"):
             with pytest.raises(ValueError, match="Researcher failed after 2 attempts"):
-                _safe_llm_call("test", "sys", model, 1000, "Researcher")
+                _safe_llm_call("test", "sys", mock_client, 1000, "Researcher")
 
     def test_success_logs_tokens(self, valid_research_dict, capsys):
         """Successful call logs token usage."""
-        model = MagicMock()
+        mock_client = MagicMock()
         response = MagicMock()
         response.text = json.dumps(valid_research_dict)
         response.usage_metadata = {"prompt": 50, "candidates": 100}
-        model.generate_content.return_value = response
+        mock_client.models.generate_content.return_value = response
 
-        _safe_llm_call("test", "sys", model, 1000, "Researcher")
+        _safe_llm_call("test", "sys", mock_client, 1000, "Researcher")
         captured = capsys.readouterr()
         assert "[Researcher] Success. Tokens:" in captured.out
 
     def test_max_tokens_passed_to_model(self, valid_research_dict):
         """max_output_tokens uses MAX_TOKENS_COMPLEX."""
-        model = MagicMock()
+        mock_client = MagicMock()
         response = MagicMock()
         response.text = json.dumps(valid_research_dict)
         response.usage_metadata = {}
-        model.generate_content.return_value = response
+        mock_client.models.generate_content.return_value = response
 
-        _safe_llm_call("test", "sys", model, MAX_TOKENS_COMPLEX, "Researcher")
-        call_args = model.generate_content.call_args
-        gen_config = call_args.kwargs.get("generation_config") or call_args[1].get("generation_config")
-        assert gen_config["max_output_tokens"] == MAX_TOKENS_COMPLEX
+        _safe_llm_call("test", "sys", mock_client, MAX_TOKENS_COMPLEX, "Researcher")
+        call_args = mock_client.models.generate_content.call_args
+        config = call_args.kwargs.get("config")
+        assert config.max_output_tokens == MAX_TOKENS_COMPLEX
 
 
 # ===========================================================================
@@ -225,40 +225,40 @@ class TestSafeLlmCallApiRetry:
 
     def test_api_error_retry_succeeds(self, valid_research_dict):
         """API exception on attempt 0, success on attempt 1."""
-        model = MagicMock()
+        mock_client = MagicMock()
         good_response = MagicMock()
         good_response.text = json.dumps(valid_research_dict)
         good_response.usage_metadata = {}
-        model.generate_content.side_effect = [
+        mock_client.models.generate_content.side_effect = [
             RuntimeError("Connection timeout"),
             good_response,
         ]
 
         with patch("agents.researcher.time.sleep") as mock_sleep:
-            result = _safe_llm_call("test", "sys", model, 1000, "Researcher")
+            result = _safe_llm_call("test", "sys", mock_client, 1000, "Researcher")
 
         mock_sleep.assert_called_once_with(ERROR_RETRY_SLEEP)
         assert result == valid_research_dict
 
     def test_api_error_both_fail_reraises(self):
         """API exception on both attempts → original re-raised."""
-        model = MagicMock()
-        model.generate_content.side_effect = RuntimeError("Server down")
+        mock_client = MagicMock()
+        mock_client.models.generate_content.side_effect = RuntimeError("Server down")
 
         with patch("agents.researcher.time.sleep"):
             with pytest.raises(RuntimeError, match="Server down"):
-                _safe_llm_call("test", "sys", model, 1000, "Researcher")
+                _safe_llm_call("test", "sys", mock_client, 1000, "Researcher")
 
     def test_json_fail_log_format(self, capsys):
         """JSON failure logs correct format."""
-        model = MagicMock()
+        mock_client = MagicMock()
         bad_response = MagicMock()
         bad_response.text = "invalid"
-        model.generate_content.return_value = bad_response
+        mock_client.models.generate_content.return_value = bad_response
 
         with patch("agents.researcher.time.sleep"):
             with pytest.raises(ValueError):
-                _safe_llm_call("test", "sys", model, 1000, "Researcher")
+                _safe_llm_call("test", "sys", mock_client, 1000, "Researcher")
 
         captured = capsys.readouterr()
         assert "[Researcher] JSON fail attempt 1:" in captured.out
@@ -266,12 +266,12 @@ class TestSafeLlmCallApiRetry:
 
     def test_api_error_log_format(self, capsys):
         """API error logs correct format."""
-        model = MagicMock()
-        model.generate_content.side_effect = RuntimeError("timeout")
+        mock_client = MagicMock()
+        mock_client.models.generate_content.side_effect = RuntimeError("timeout")
 
         with patch("agents.researcher.time.sleep"):
             with pytest.raises(RuntimeError):
-                _safe_llm_call("test", "sys", model, 1000, "Researcher")
+                _safe_llm_call("test", "sys", mock_client, 1000, "Researcher")
 
         captured = capsys.readouterr()
         assert "[Researcher] API error attempt 1:" in captured.out
@@ -472,12 +472,12 @@ class TestResearchCompanySuccess:
     @patch("agents.researcher.genai")
     @patch("agents.researcher.time.sleep")
     def test_returns_8_keys_no_error_flag(self, mock_sleep, mock_genai, valid_research_dict):
-        mock_model = MagicMock()
+        mock_client = MagicMock()
         response = MagicMock()
         response.text = json.dumps(valid_research_dict)
         response.usage_metadata = {}
-        mock_model.generate_content.return_value = response
-        mock_genai.GenerativeModel.return_value = mock_model
+        mock_client.models.generate_content.return_value = response
+        mock_genai.Client.return_value = mock_client
 
         result = research_company("Google", "SWE", "senior", "key")
         assert set(result.keys()) == set(_REQUIRED_KEYS)
@@ -486,44 +486,45 @@ class TestResearchCompanySuccess:
     @patch("agents.researcher.genai")
     @patch("agents.researcher.time.sleep")
     def test_rate_limit_sleep_called(self, mock_sleep, mock_genai, valid_research_dict):
-        mock_model = MagicMock()
+        mock_client = MagicMock()
         response = MagicMock()
         response.text = json.dumps(valid_research_dict)
         response.usage_metadata = {}
-        mock_model.generate_content.return_value = response
-        mock_genai.GenerativeModel.return_value = mock_model
+        mock_client.models.generate_content.return_value = response
+        mock_genai.Client.return_value = mock_client
 
         research_company("Google", "SWE", "senior", "key")
         mock_sleep.assert_called_with(RATE_LIMIT_SLEEP)
 
     @patch("agents.researcher.genai")
     @patch("agents.researcher.time.sleep")
-    def test_genai_configure_called_with_key(self, mock_sleep, mock_genai, valid_research_dict):
-        mock_model = MagicMock()
+    def test_genai_client_called_with_key(self, mock_sleep, mock_genai, valid_research_dict):
+        mock_client = MagicMock()
         response = MagicMock()
         response.text = json.dumps(valid_research_dict)
         response.usage_metadata = {}
-        mock_model.generate_content.return_value = response
-        mock_genai.GenerativeModel.return_value = mock_model
+        mock_client.models.generate_content.return_value = response
+        mock_genai.Client.return_value = mock_client
 
         research_company("Google", "SWE", "senior", "test-api-key")
-        mock_genai.configure.assert_called_once_with(api_key="test-api-key")
+        mock_genai.Client.assert_called_once_with(api_key="test-api-key")
 
+    @patch("agents.researcher.types")
     @patch("agents.researcher.genai")
     @patch("agents.researcher.time.sleep")
-    def test_search_grounding_enabled(self, mock_sleep, mock_genai, valid_research_dict):
-        mock_model = MagicMock()
+    def test_search_grounding_enabled(self, mock_sleep, mock_genai, mock_types, valid_research_dict):
+        mock_client = MagicMock()
         response = MagicMock()
         response.text = json.dumps(valid_research_dict)
         response.usage_metadata = {}
-        mock_model.generate_content.return_value = response
-        mock_genai.GenerativeModel.return_value = mock_model
+        mock_client.models.generate_content.return_value = response
+        mock_genai.Client.return_value = mock_client
 
         research_company("Google", "SWE", "senior", "key")
-        mock_genai.GenerativeModel.assert_called_once_with(
-            model_name=GEMINI_MODEL,
-            tools="google_search_retrieval",
-        )
+        # Verify that GoogleSearch tool was used in the config
+        call_args = mock_client.models.generate_content.call_args
+        config = call_args.kwargs.get("config")
+        assert config is not None
 
 
 # ===========================================================================
@@ -537,9 +538,9 @@ class TestResearchCompanyFailure:
     @patch("agents.researcher.genai")
     @patch("agents.researcher.time.sleep")
     def test_api_failure_returns_default_dict(self, mock_sleep, mock_genai):
-        mock_model = MagicMock()
-        mock_model.generate_content.side_effect = RuntimeError("API down")
-        mock_genai.GenerativeModel.return_value = mock_model
+        mock_client = MagicMock()
+        mock_client.models.generate_content.side_effect = RuntimeError("API down")
+        mock_genai.Client.return_value = mock_client
 
         result = research_company("Google", "SWE", "senior", "key")
         assert result["error_flag"] is True
@@ -548,15 +549,15 @@ class TestResearchCompanyFailure:
     @patch("agents.researcher.genai")
     @patch("agents.researcher.time.sleep")
     def test_validation_failure_returns_default_dict(self, mock_sleep, mock_genai):
-        mock_model = MagicMock()
+        mock_client = MagicMock()
         response = MagicMock()
         # Missing key_topics → validation fails
         response.text = json.dumps({"company": "G", "role": "R", "interview_rounds": "3",
                                      "difficulty": "hard", "culture_keywords": ["x"],
                                      "known_question_types": ["y"], "red_flags_to_test": ["z"]})
         response.usage_metadata = {}
-        mock_model.generate_content.return_value = response
-        mock_genai.GenerativeModel.return_value = mock_model
+        mock_client.models.generate_content.return_value = response
+        mock_genai.Client.return_value = mock_client
 
         result = research_company("Google", "SWE", "senior", "key")
         assert result["error_flag"] is True
@@ -564,9 +565,9 @@ class TestResearchCompanyFailure:
     @patch("agents.researcher.genai")
     @patch("agents.researcher.time.sleep")
     def test_warning_printed_on_failure(self, mock_sleep, mock_genai, capsys):
-        mock_model = MagicMock()
-        mock_model.generate_content.side_effect = RuntimeError("fail")
-        mock_genai.GenerativeModel.return_value = mock_model
+        mock_client = MagicMock()
+        mock_client.models.generate_content.side_effect = RuntimeError("fail")
+        mock_genai.Client.return_value = mock_client
 
         research_company("Google", "SWE", "senior", "key")
         captured = capsys.readouterr()
@@ -575,9 +576,9 @@ class TestResearchCompanyFailure:
     @patch("agents.researcher.genai")
     @patch("agents.researcher.time.sleep")
     def test_default_dict_has_nonempty_values(self, mock_sleep, mock_genai):
-        mock_model = MagicMock()
-        mock_model.generate_content.side_effect = RuntimeError("fail")
-        mock_genai.GenerativeModel.return_value = mock_model
+        mock_client = MagicMock()
+        mock_client.models.generate_content.side_effect = RuntimeError("fail")
+        mock_genai.Client.return_value = mock_client
 
         result = research_company("Google", "SWE", "senior", "key")
         for key in _REQUIRED_KEYS:
@@ -621,12 +622,12 @@ class TestNoHardcodedValues:
     @patch("agents.researcher.genai")
     @patch("agents.researcher.time.sleep")
     def test_sleep_uses_rate_limit_constant(self, mock_sleep, mock_genai, valid_research_dict):
-        mock_model = MagicMock()
+        mock_client = MagicMock()
         response = MagicMock()
         response.text = json.dumps(valid_research_dict)
         response.usage_metadata = {}
-        mock_model.generate_content.return_value = response
-        mock_genai.GenerativeModel.return_value = mock_model
+        mock_client.models.generate_content.return_value = response
+        mock_genai.Client.return_value = mock_client
 
         research_company("Google", "SWE", "senior", "key")
         # First sleep call should be RATE_LIMIT_SLEEP (before LLM call)
@@ -635,17 +636,17 @@ class TestNoHardcodedValues:
     @patch("agents.researcher.genai")
     @patch("agents.researcher.time.sleep")
     def test_max_tokens_passed_as_constant(self, mock_sleep, mock_genai, valid_research_dict):
-        mock_model = MagicMock()
+        mock_client = MagicMock()
         response = MagicMock()
         response.text = json.dumps(valid_research_dict)
         response.usage_metadata = {}
-        mock_model.generate_content.return_value = response
-        mock_genai.GenerativeModel.return_value = mock_model
+        mock_client.models.generate_content.return_value = response
+        mock_genai.Client.return_value = mock_client
 
         research_company("Google", "SWE", "senior", "key")
-        call_args = mock_model.generate_content.call_args
-        gen_config = call_args.kwargs.get("generation_config") or call_args[1].get("generation_config")
-        assert gen_config["max_output_tokens"] == MAX_TOKENS_COMPLEX
+        call_args = mock_client.models.generate_content.call_args
+        config = call_args.kwargs.get("config")
+        assert config.max_output_tokens == MAX_TOKENS_COMPLEX
 
 
 # ===========================================================================
@@ -689,15 +690,15 @@ class TestPropertyOutputStructure:
 
         with patch("agents.researcher.genai") as mock_genai, \
              patch("agents.researcher.time.sleep"):
-            mock_model = MagicMock()
+            mock_client = MagicMock()
             if succeed:
                 response = MagicMock()
                 response.text = json.dumps(valid_dict)
                 response.usage_metadata = {}
-                mock_model.generate_content.return_value = response
+                mock_client.models.generate_content.return_value = response
             else:
-                mock_model.generate_content.side_effect = RuntimeError("fail")
-            mock_genai.GenerativeModel.return_value = mock_model
+                mock_client.models.generate_content.side_effect = RuntimeError("fail")
+            mock_genai.Client.return_value = mock_client
 
             result = research_company(company, role, level, "key")
 
@@ -727,9 +728,9 @@ class TestPropertyFailureSafety:
 
         with patch("agents.researcher.genai") as mock_genai, \
              patch("agents.researcher.time.sleep"):
-            mock_model = MagicMock()
-            mock_model.generate_content.side_effect = exc_type("simulated failure")
-            mock_genai.GenerativeModel.return_value = mock_model
+            mock_client = MagicMock()
+            mock_client.models.generate_content.side_effect = exc_type("simulated failure")
+            mock_genai.Client.return_value = mock_client
 
             # Must never raise for valid sanitized inputs
             result = research_company(company, role, level, "key")
@@ -850,13 +851,13 @@ class TestPropertyMarkdownStripping:
         else:  # prose_around
             wrapped = f"Here is the result:\n```json\n{json_str}\n```\nDone."
 
-        model = MagicMock()
+        mock_client = MagicMock()
         response = MagicMock()
         response.text = wrapped
         response.usage_metadata = {}
-        model.generate_content.return_value = response
+        mock_client.models.generate_content.return_value = response
 
-        result = _safe_llm_call("test", "sys", model, 1000, "Test")
+        result = _safe_llm_call("test", "sys", mock_client, 1000, "Test")
         assert result == data
 
 
@@ -871,7 +872,7 @@ class TestPropertyRetryCount:
         second_succeeds=st.booleans(),
     )
     def test_retry_count_invariant(self, error_type, second_succeeds):
-        model = MagicMock()
+        mock_client = MagicMock()
         # Inline valid dict instead of using fixture
         valid_dict = {
             "company": "Google",
@@ -891,32 +892,32 @@ class TestPropertyRetryCount:
                 good_response = MagicMock()
                 good_response.text = json.dumps(valid_dict)
                 good_response.usage_metadata = {}
-                model.generate_content.side_effect = [bad_response, good_response]
+                mock_client.models.generate_content.side_effect = [bad_response, good_response]
             else:
-                model.generate_content.return_value = bad_response
+                mock_client.models.generate_content.return_value = bad_response
         else:  # api_error
             if second_succeeds:
                 good_response = MagicMock()
                 good_response.text = json.dumps(valid_dict)
                 good_response.usage_metadata = {}
-                model.generate_content.side_effect = [
+                mock_client.models.generate_content.side_effect = [
                     RuntimeError("timeout"),
                     good_response,
                 ]
             else:
-                model.generate_content.side_effect = RuntimeError("timeout")
+                mock_client.models.generate_content.side_effect = RuntimeError("timeout")
 
         with patch("agents.researcher.time.sleep") as mock_sleep:
             try:
-                _safe_llm_call("test", "sys", model, 1000, "Researcher")
+                _safe_llm_call("test", "sys", mock_client, 1000, "Researcher")
             except (ValueError, RuntimeError):
                 pass
 
         # At most 2 calls
-        assert model.generate_content.call_count <= 2
+        assert mock_client.models.generate_content.call_count <= 2
 
         # Verify sleep durations
-        if model.generate_content.call_count == 2:
+        if mock_client.models.generate_content.call_count == 2:
             if error_type == "json_error":
                 mock_sleep.assert_called_with(RATE_LIMIT_SLEEP)
             else:

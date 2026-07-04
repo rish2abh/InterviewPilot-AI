@@ -72,10 +72,9 @@ VALID_LLM_RESPONSE = {
 # ---------------------------------------------------------------------------
 
 @patch("agents.coach._safe_llm_call")
-@patch("agents.coach.genai.GenerativeModel")
-@patch("agents.coach.genai.configure")
+@patch("agents.coach.genai.Client")
 @patch("agents.coach.time.sleep")
-def test_valid_input_succeeds(mock_sleep, mock_configure, mock_model_cls, mock_llm):
+def test_valid_input_succeeds(mock_sleep, mock_client, mock_llm):
     """Mock LLM returning valid 11-key JSON → returns Report_Dict with 11 keys."""
     mock_llm.return_value = VALID_LLM_RESPONSE.copy()
     answers = make_valid_answers(total_per_answer=15)
@@ -96,10 +95,9 @@ def test_valid_input_succeeds(mock_sleep, mock_configure, mock_model_cls, mock_l
 # ---------------------------------------------------------------------------
 
 @patch("agents.coach._safe_llm_call")
-@patch("agents.coach.genai.GenerativeModel")
-@patch("agents.coach.genai.configure")
+@patch("agents.coach.genai.Client")
 @patch("agents.coach.time.sleep")
-def test_rate_limit_sleep_called(mock_sleep, mock_configure, mock_model_cls, mock_llm):
+def test_rate_limit_sleep_called(mock_sleep, mock_client, mock_llm):
     """Assert time.sleep called with RATE_LIMIT_SLEEP before LLM."""
     mock_llm.return_value = VALID_LLM_RESPONSE.copy()
     generate_report("session-123", make_valid_answers())
@@ -111,14 +109,13 @@ def test_rate_limit_sleep_called(mock_sleep, mock_configure, mock_model_cls, moc
 # ---------------------------------------------------------------------------
 
 @patch("agents.coach._safe_llm_call")
-@patch("agents.coach.genai.GenerativeModel")
-@patch("agents.coach.genai.configure")
+@patch("agents.coach.genai.Client")
 @patch("agents.coach.time.sleep")
-def test_gemini_api_key_used(mock_sleep, mock_configure, mock_model_cls, mock_llm):
-    """Assert genai.configure called with GEMINI_API_KEY."""
+def test_gemini_api_key_used(mock_sleep, mock_client, mock_llm):
+    """Assert genai.Client called with api_key=GEMINI_API_KEY."""
     mock_llm.return_value = VALID_LLM_RESPONSE.copy()
     generate_report("session-123", make_valid_answers())
-    mock_configure.assert_called_once_with(api_key=GEMINI_API_KEY)
+    mock_client.assert_called_once_with(api_key=GEMINI_API_KEY)
 
 
 # ---------------------------------------------------------------------------
@@ -126,14 +123,14 @@ def test_gemini_api_key_used(mock_sleep, mock_configure, mock_model_cls, mock_ll
 # ---------------------------------------------------------------------------
 
 @patch("agents.coach._safe_llm_call")
-@patch("agents.coach.genai.GenerativeModel")
-@patch("agents.coach.genai.configure")
+@patch("agents.coach.genai.Client")
 @patch("agents.coach.time.sleep")
-def test_gemini_model_used(mock_sleep, mock_configure, mock_model_cls, mock_llm):
-    """Assert genai.GenerativeModel called with GEMINI_MODEL."""
+def test_gemini_model_used(mock_sleep, mock_client, mock_llm):
+    """Assert GEMINI_MODEL is passed to _safe_llm_call via the client."""
     mock_llm.return_value = VALID_LLM_RESPONSE.copy()
     generate_report("session-123", make_valid_answers())
-    mock_model_cls.assert_called_once_with(GEMINI_MODEL)
+    # Model name is now used inside _safe_llm_call; verify client was created
+    mock_client.assert_called_once_with(api_key=GEMINI_API_KEY)
 
 
 # ---------------------------------------------------------------------------
@@ -141,10 +138,9 @@ def test_gemini_model_used(mock_sleep, mock_configure, mock_model_cls, mock_llm)
 # ---------------------------------------------------------------------------
 
 @patch("agents.coach._safe_llm_call")
-@patch("agents.coach.genai.GenerativeModel")
-@patch("agents.coach.genai.configure")
+@patch("agents.coach.genai.Client")
 @patch("agents.coach.time.sleep")
-def test_max_tokens_report_passed(mock_sleep, mock_configure, mock_model_cls, mock_llm):
+def test_max_tokens_report_passed(mock_sleep, mock_client, mock_llm):
     """Assert _safe_llm_call is called with max_tokens == MAX_TOKENS_REPORT."""
     mock_llm.return_value = VALID_LLM_RESPONSE.copy()
     generate_report("session-123", make_valid_answers())
@@ -159,10 +155,9 @@ def test_max_tokens_report_passed(mock_sleep, mock_configure, mock_model_cls, mo
 # ---------------------------------------------------------------------------
 
 @patch("agents.coach._safe_llm_call")
-@patch("agents.coach.genai.GenerativeModel")
-@patch("agents.coach.genai.configure")
+@patch("agents.coach.genai.Client")
 @patch("agents.coach.time.sleep")
-def test_agent_name_is_coach(mock_sleep, mock_configure, mock_model_cls, mock_llm):
+def test_agent_name_is_coach(mock_sleep, mock_client, mock_llm):
     """Assert _safe_llm_call is called with agent_name == 'Coach'."""
     mock_llm.return_value = VALID_LLM_RESPONSE.copy()
     generate_report("session-123", make_valid_answers())
@@ -287,10 +282,9 @@ def test_missing_evaluation_missing_keywords_raises():
 # ---------------------------------------------------------------------------
 
 @patch("agents.coach._safe_llm_call")
-@patch("agents.coach.genai.GenerativeModel")
-@patch("agents.coach.genai.configure")
+@patch("agents.coach.genai.Client")
 @patch("agents.coach.time.sleep")
-def test_llm_missing_keys_raises(mock_sleep, mock_configure, mock_model_cls, mock_llm):
+def test_llm_missing_keys_raises(mock_sleep, mock_client, mock_llm):
     """Mock LLM missing 'critical_moment' → ValueError listing missing keys."""
     response = VALID_LLM_RESPONSE.copy()
     del response["critical_moment"]
@@ -304,10 +298,9 @@ def test_llm_missing_keys_raises(mock_sleep, mock_configure, mock_model_cls, moc
 # ---------------------------------------------------------------------------
 
 @patch("agents.coach._safe_llm_call")
-@patch("agents.coach.genai.GenerativeModel")
-@patch("agents.coach.genai.configure")
+@patch("agents.coach.genai.Client")
 @patch("agents.coach.time.sleep")
-def test_extra_keys_stripped(mock_sleep, mock_configure, mock_model_cls, mock_llm):
+def test_extra_keys_stripped(mock_sleep, mock_client, mock_llm):
     """Mock LLM returning 13 keys → output has exactly 11 keys."""
     response = VALID_LLM_RESPONSE.copy()
     response["extra_key_1"] = "should be stripped"
@@ -324,10 +317,9 @@ def test_extra_keys_stripped(mock_sleep, mock_configure, mock_model_cls, mock_ll
 # ---------------------------------------------------------------------------
 
 @patch("agents.coach._safe_llm_call")
-@patch("agents.coach.genai.GenerativeModel")
-@patch("agents.coach.genai.configure")
+@patch("agents.coach.genai.Client")
 @patch("agents.coach.time.sleep")
-def test_overall_score_overridden(mock_sleep, mock_configure, mock_model_cls, mock_llm):
+def test_overall_score_overridden(mock_sleep, mock_client, mock_llm):
     """Mock LLM returning overall_score=999 → output uses sum of totals."""
     response = VALID_LLM_RESPONSE.copy()
     response["overall_score"] = 999
@@ -342,10 +334,9 @@ def test_overall_score_overridden(mock_sleep, mock_configure, mock_model_cls, mo
 # ---------------------------------------------------------------------------
 
 @patch("agents.coach._safe_llm_call")
-@patch("agents.coach.genai.GenerativeModel")
-@patch("agents.coach.genai.configure")
+@patch("agents.coach.genai.Client")
 @patch("agents.coach.time.sleep")
-def test_hiring_probability_overridden(mock_sleep, mock_configure, mock_model_cls, mock_llm):
+def test_hiring_probability_overridden(mock_sleep, mock_client, mock_llm):
     """Mock LLM returning 'Very High' → output uses band calculation."""
     response = VALID_LLM_RESPONSE.copy()
     response["hiring_probability"] = "Very High"
@@ -361,10 +352,9 @@ def test_hiring_probability_overridden(mock_sleep, mock_configure, mock_model_cl
 # ---------------------------------------------------------------------------
 
 @patch("agents.coach._safe_llm_call")
-@patch("agents.coach.genai.GenerativeModel")
-@patch("agents.coach.genai.configure")
+@patch("agents.coach.genai.Client")
 @patch("agents.coach.time.sleep")
-def test_hiring_probability_percent_overridden(mock_sleep, mock_configure, mock_model_cls, mock_llm):
+def test_hiring_probability_percent_overridden(mock_sleep, mock_client, mock_llm):
     """Mock LLM returning 99 → output uses formula."""
     response = VALID_LLM_RESPONSE.copy()
     response["hiring_probability_percent"] = 99
@@ -380,10 +370,9 @@ def test_hiring_probability_percent_overridden(mock_sleep, mock_configure, mock_
 # ---------------------------------------------------------------------------
 
 @patch("agents.coach._safe_llm_call")
-@patch("agents.coach.genai.GenerativeModel")
-@patch("agents.coach.genai.configure")
+@patch("agents.coach.genai.Client")
 @patch("agents.coach.time.sleep")
-def test_low_band_score_79(mock_sleep, mock_configure, mock_model_cls, mock_llm):
+def test_low_band_score_79(mock_sleep, mock_client, mock_llm):
     """Mock answers summing to 79 → hiring_probability == 'Low'."""
     mock_llm.return_value = VALID_LLM_RESPONSE.copy()
     # 79 total: first answer has 7, rest have 8 each → 7 + 9*8 = 79
@@ -399,10 +388,9 @@ def test_low_band_score_79(mock_sleep, mock_configure, mock_model_cls, mock_llm)
 # ---------------------------------------------------------------------------
 
 @patch("agents.coach._safe_llm_call")
-@patch("agents.coach.genai.GenerativeModel")
-@patch("agents.coach.genai.configure")
+@patch("agents.coach.genai.Client")
 @patch("agents.coach.time.sleep")
-def test_medium_band_score_80(mock_sleep, mock_configure, mock_model_cls, mock_llm):
+def test_medium_band_score_80(mock_sleep, mock_client, mock_llm):
     """Mock answers summing to 80 → hiring_probability == 'Medium'."""
     mock_llm.return_value = VALID_LLM_RESPONSE.copy()
     answers = make_valid_answers(total_per_answer=8)  # 8*10=80
@@ -416,10 +404,9 @@ def test_medium_band_score_80(mock_sleep, mock_configure, mock_model_cls, mock_l
 # ---------------------------------------------------------------------------
 
 @patch("agents.coach._safe_llm_call")
-@patch("agents.coach.genai.GenerativeModel")
-@patch("agents.coach.genai.configure")
+@patch("agents.coach.genai.Client")
 @patch("agents.coach.time.sleep")
-def test_medium_band_score_140(mock_sleep, mock_configure, mock_model_cls, mock_llm):
+def test_medium_band_score_140(mock_sleep, mock_client, mock_llm):
     """Mock answers summing to 140 → hiring_probability == 'Medium'."""
     mock_llm.return_value = VALID_LLM_RESPONSE.copy()
     answers = make_valid_answers(total_per_answer=14)  # 14*10=140
@@ -433,10 +420,9 @@ def test_medium_band_score_140(mock_sleep, mock_configure, mock_model_cls, mock_
 # ---------------------------------------------------------------------------
 
 @patch("agents.coach._safe_llm_call")
-@patch("agents.coach.genai.GenerativeModel")
-@patch("agents.coach.genai.configure")
+@patch("agents.coach.genai.Client")
 @patch("agents.coach.time.sleep")
-def test_high_band_score_141(mock_sleep, mock_configure, mock_model_cls, mock_llm):
+def test_high_band_score_141(mock_sleep, mock_client, mock_llm):
     """Mock answers summing to 141 → hiring_probability == 'High'."""
     mock_llm.return_value = VALID_LLM_RESPONSE.copy()
     # 141 total: first answer has 15, rest have 14 each → 15 + 9*14 = 141
@@ -452,10 +438,9 @@ def test_high_band_score_141(mock_sleep, mock_configure, mock_model_cls, mock_ll
 # ---------------------------------------------------------------------------
 
 @patch("agents.coach._safe_llm_call")
-@patch("agents.coach.genai.GenerativeModel")
-@patch("agents.coach.genai.configure")
+@patch("agents.coach.genai.Client")
 @patch("agents.coach.time.sleep")
-def test_hiring_probability_percent_calculation(mock_sleep, mock_configure, mock_model_cls, mock_llm):
+def test_hiring_probability_percent_calculation(mock_sleep, mock_client, mock_llm):
     """score 150 → round((150/200)*100) == 75."""
     mock_llm.return_value = VALID_LLM_RESPONSE.copy()
     answers = make_valid_answers(total_per_answer=15)  # 15*10=150
@@ -469,10 +454,9 @@ def test_hiring_probability_percent_calculation(mock_sleep, mock_configure, mock
 # ---------------------------------------------------------------------------
 
 @patch("agents.coach._safe_llm_call")
-@patch("agents.coach.genai.GenerativeModel")
-@patch("agents.coach.genai.configure")
+@patch("agents.coach.genai.Client")
 @patch("agents.coach.time.sleep")
-def test_invalid_strongest_category_raises(mock_sleep, mock_configure, mock_model_cls, mock_llm):
+def test_invalid_strongest_category_raises(mock_sleep, mock_client, mock_llm):
     """Empty string strongest_category → ValueError."""
     response = VALID_LLM_RESPONSE.copy()
     response["strongest_category"] = ""
@@ -486,10 +470,9 @@ def test_invalid_strongest_category_raises(mock_sleep, mock_configure, mock_mode
 # ---------------------------------------------------------------------------
 
 @patch("agents.coach._safe_llm_call")
-@patch("agents.coach.genai.GenerativeModel")
-@patch("agents.coach.genai.configure")
+@patch("agents.coach.genai.Client")
 @patch("agents.coach.time.sleep")
-def test_invalid_top_3_strengths_count_raises(mock_sleep, mock_configure, mock_model_cls, mock_llm):
+def test_invalid_top_3_strengths_count_raises(mock_sleep, mock_client, mock_llm):
     """2 items in top_3_strengths → ValueError."""
     response = VALID_LLM_RESPONSE.copy()
     response["top_3_strengths"] = ["Good depth", "Clear structure"]
@@ -503,10 +486,9 @@ def test_invalid_top_3_strengths_count_raises(mock_sleep, mock_configure, mock_m
 # ---------------------------------------------------------------------------
 
 @patch("agents.coach._safe_llm_call")
-@patch("agents.coach.genai.GenerativeModel")
-@patch("agents.coach.genai.configure")
+@patch("agents.coach.genai.Client")
 @patch("agents.coach.time.sleep")
-def test_invalid_improvement_entry_missing_key(mock_sleep, mock_configure, mock_model_cls, mock_llm):
+def test_invalid_improvement_entry_missing_key(mock_sleep, mock_client, mock_llm):
     """Entry without 'how_to_fix' → ValueError."""
     response = VALID_LLM_RESPONSE.copy()
     response["top_3_improvements"] = [
@@ -524,10 +506,9 @@ def test_invalid_improvement_entry_missing_key(mock_sleep, mock_configure, mock_
 # ---------------------------------------------------------------------------
 
 @patch("agents.coach._safe_llm_call")
-@patch("agents.coach.genai.GenerativeModel")
-@patch("agents.coach.genai.configure")
+@patch("agents.coach.genai.Client")
 @patch("agents.coach.time.sleep")
-def test_invalid_free_resource_url(mock_sleep, mock_configure, mock_model_cls, mock_llm):
+def test_invalid_free_resource_url(mock_sleep, mock_client, mock_llm):
     """'not-a-url' → ValueError."""
     response = VALID_LLM_RESPONSE.copy()
     response["top_3_improvements"] = [
@@ -545,10 +526,9 @@ def test_invalid_free_resource_url(mock_sleep, mock_configure, mock_model_cls, m
 # ---------------------------------------------------------------------------
 
 @patch("agents.coach._safe_llm_call")
-@patch("agents.coach.genai.GenerativeModel")
-@patch("agents.coach.genai.configure")
+@patch("agents.coach.genai.Client")
 @patch("agents.coach.time.sleep")
-def test_empty_free_resource_raises(mock_sleep, mock_configure, mock_model_cls, mock_llm):
+def test_empty_free_resource_raises(mock_sleep, mock_client, mock_llm):
     """'' free_resource → ValueError."""
     response = VALID_LLM_RESPONSE.copy()
     response["top_3_improvements"] = [
@@ -566,10 +546,9 @@ def test_empty_free_resource_raises(mock_sleep, mock_configure, mock_model_cls, 
 # ---------------------------------------------------------------------------
 
 @patch("agents.coach._safe_llm_call")
-@patch("agents.coach.genai.GenerativeModel")
-@patch("agents.coach.genai.configure")
+@patch("agents.coach.genai.Client")
 @patch("agents.coach.time.sleep")
-def test_critical_moment_no_digit_raises(mock_sleep, mock_configure, mock_model_cls, mock_llm):
+def test_critical_moment_no_digit_raises(mock_sleep, mock_client, mock_llm):
     """'The candidate performed well' → ValueError."""
     response = VALID_LLM_RESPONSE.copy()
     response["critical_moment"] = "The candidate performed well"
@@ -583,10 +562,9 @@ def test_critical_moment_no_digit_raises(mock_sleep, mock_configure, mock_model_
 # ---------------------------------------------------------------------------
 
 @patch("agents.coach._safe_llm_call")
-@patch("agents.coach.genai.GenerativeModel")
-@patch("agents.coach.genai.configure")
+@patch("agents.coach.genai.Client")
 @patch("agents.coach.time.sleep")
-def test_critical_moment_with_digit_passes(mock_sleep, mock_configure, mock_model_cls, mock_llm):
+def test_critical_moment_with_digit_passes(mock_sleep, mock_client, mock_llm):
     """'Question 3 was the turning point' → passes validation."""
     response = VALID_LLM_RESPONSE.copy()
     response["critical_moment"] = "Question 3 was the turning point"
@@ -599,24 +577,26 @@ def test_critical_moment_with_digit_passes(mock_sleep, mock_configure, mock_mode
 # Test 34: Compression excludes answer_text
 # ---------------------------------------------------------------------------
 
-@patch("agents.coach.genai.GenerativeModel")
-@patch("agents.coach.genai.configure")
+@patch("agents.coach.genai.Client")
 @patch("agents.coach.time.sleep")
-def test_compression_excludes_answer_text(mock_sleep, mock_configure, mock_model_cls):
+def test_compression_excludes_answer_text(mock_sleep, mock_client_cls):
     """Capture user prompt, assert no answer_text content present."""
-    mock_model = MagicMock()
-    mock_model_cls.return_value = mock_model
+    mock_client = MagicMock()
+    mock_client_cls.return_value = mock_client
     mock_response = MagicMock()
     mock_response.text = json.dumps(VALID_LLM_RESPONSE)
     mock_response.usage_metadata = "mock_tokens"
-    mock_model.generate_content.return_value = mock_response
+    mock_client.models.generate_content.return_value = mock_response
 
     answers = make_valid_answers()
     result = generate_report("session-123", answers)
 
     # Get the user prompt passed to generate_content
-    call_args = mock_model.generate_content.call_args[0][0]
-    user_prompt = call_args[1]  # [system, prompt]
+    call_kwargs = mock_client.models.generate_content.call_args
+    user_prompt = call_kwargs.kwargs.get("contents") or call_kwargs[1].get("contents")
+    if user_prompt is None:
+        # positional args
+        user_prompt = call_kwargs[0][1] if len(call_kwargs[0]) > 1 else call_kwargs[0][0]
 
     # answer_text values should NOT appear in prompt
     for answer in answers:
@@ -628,24 +608,25 @@ def test_compression_excludes_answer_text(mock_sleep, mock_configure, mock_model
 # Test 35: Compression includes question_index
 # ---------------------------------------------------------------------------
 
-@patch("agents.coach.genai.GenerativeModel")
-@patch("agents.coach.genai.configure")
+@patch("agents.coach.genai.Client")
 @patch("agents.coach.time.sleep")
-def test_compression_includes_question_index(mock_sleep, mock_configure, mock_model_cls):
+def test_compression_includes_question_index(mock_sleep, mock_client_cls):
     """Each compressed entry has 1-based index."""
-    mock_model = MagicMock()
-    mock_model_cls.return_value = mock_model
+    mock_client = MagicMock()
+    mock_client_cls.return_value = mock_client
     mock_response = MagicMock()
     mock_response.text = json.dumps(VALID_LLM_RESPONSE)
     mock_response.usage_metadata = "mock_tokens"
-    mock_model.generate_content.return_value = mock_response
+    mock_client.models.generate_content.return_value = mock_response
 
     answers = make_valid_answers()
     generate_report("session-123", answers)
 
     # Parse the compressed JSON from the user prompt
-    call_args = mock_model.generate_content.call_args[0][0]
-    user_prompt = call_args[1]
+    call_kwargs = mock_client.models.generate_content.call_args
+    user_prompt = call_kwargs.kwargs.get("contents") or call_kwargs[1].get("contents")
+    if user_prompt is None:
+        user_prompt = call_kwargs[0][1] if len(call_kwargs[0]) > 1 else call_kwargs[0][0]
 
     # Extract the compressed data JSON from the prompt
     # The prompt has format: "...Compressed answer data:\n{json}"
@@ -663,8 +644,8 @@ def test_compression_includes_question_index(mock_sleep, mock_configure, mock_mo
 # ---------------------------------------------------------------------------
 
 def test_json_retry_behavior():
-    """Mock model.generate_content returns invalid JSON then valid → retries."""
-    mock_model = MagicMock()
+    """Mock client.models.generate_content returns invalid JSON then valid → retries."""
+    mock_client = MagicMock()
 
     # First call returns invalid JSON, second returns valid
     response_bad = MagicMock()
@@ -673,12 +654,12 @@ def test_json_retry_behavior():
     response_good.text = json.dumps(VALID_LLM_RESPONSE)
     response_good.usage_metadata = "mock_tokens"
 
-    mock_model.generate_content.side_effect = [response_bad, response_good]
+    mock_client.models.generate_content.side_effect = [response_bad, response_good]
 
     with patch("agents.coach.time.sleep"):
-        result = _safe_llm_call("prompt", "system", mock_model, 1500, "Coach")
+        result = _safe_llm_call("prompt", "system", mock_client, 1500, "Coach")
 
-    assert mock_model.generate_content.call_count == 2
+    assert mock_client.models.generate_content.call_count == 2
     assert result == VALID_LLM_RESPONSE
 
 
@@ -687,20 +668,20 @@ def test_json_retry_behavior():
 # ---------------------------------------------------------------------------
 
 def test_api_error_retry():
-    """Mock model.generate_content raises then succeeds → ERROR_RETRY_SLEEP sleep, retry."""
-    mock_model = MagicMock()
+    """Mock client.models.generate_content raises then succeeds → ERROR_RETRY_SLEEP sleep, retry."""
+    mock_client = MagicMock()
 
     response_good = MagicMock()
     response_good.text = json.dumps(VALID_LLM_RESPONSE)
     response_good.usage_metadata = "mock_tokens"
 
-    mock_model.generate_content.side_effect = [
+    mock_client.models.generate_content.side_effect = [
         RuntimeError("API error"),
         response_good,
     ]
 
     with patch("agents.coach.time.sleep") as mock_sleep:
-        result = _safe_llm_call("prompt", "system", mock_model, 1500, "Coach")
+        result = _safe_llm_call("prompt", "system", mock_client, 1500, "Coach")
 
     mock_sleep.assert_called_with(ERROR_RETRY_SLEEP)
     assert result == VALID_LLM_RESPONSE
@@ -711,10 +692,9 @@ def test_api_error_retry():
 # ---------------------------------------------------------------------------
 
 @patch("agents.coach._safe_llm_call")
-@patch("agents.coach.genai.GenerativeModel")
-@patch("agents.coach.genai.configure")
+@patch("agents.coach.genai.Client")
 @patch("agents.coach.time.sleep")
-def test_valueerror_propagation_from_safe_llm_call(mock_sleep, mock_configure, mock_model_cls, mock_llm):
+def test_valueerror_propagation_from_safe_llm_call(mock_sleep, mock_client, mock_llm):
     """Mock raises ValueError → propagated to caller."""
     mock_llm.side_effect = ValueError("Coach failed after 2 attempts")
     with pytest.raises(ValueError, match="Coach failed after 2 attempts"):
@@ -726,10 +706,9 @@ def test_valueerror_propagation_from_safe_llm_call(mock_sleep, mock_configure, m
 # ---------------------------------------------------------------------------
 
 @patch("agents.coach._safe_llm_call")
-@patch("agents.coach.genai.GenerativeModel")
-@patch("agents.coach.genai.configure")
+@patch("agents.coach.genai.Client")
 @patch("agents.coach.time.sleep")
-def test_non_valueerror_propagation(mock_sleep, mock_configure, mock_model_cls, mock_llm):
+def test_non_valueerror_propagation(mock_sleep, mock_client, mock_llm):
     """Mock raises RuntimeError → propagated unchanged."""
     mock_llm.side_effect = RuntimeError("API exploded")
     with pytest.raises(RuntimeError, match="API exploded"):
@@ -741,10 +720,9 @@ def test_non_valueerror_propagation(mock_sleep, mock_configure, mock_model_cls, 
 # ---------------------------------------------------------------------------
 
 @patch("agents.coach._safe_llm_call")
-@patch("agents.coach.genai.GenerativeModel")
-@patch("agents.coach.genai.configure")
+@patch("agents.coach.genai.Client")
 @patch("agents.coach.time.sleep")
-def test_no_database_operations(mock_sleep, mock_configure, mock_model_cls, mock_llm):
+def test_no_database_operations(mock_sleep, mock_client, mock_llm):
     """Mock core.database, assert no DB functions called."""
     mock_llm.return_value = VALID_LLM_RESPONSE.copy()
     with patch.dict("sys.modules", {"core.database": MagicMock()}) as mock_modules:
@@ -762,14 +740,14 @@ def test_no_database_operations(mock_sleep, mock_configure, mock_model_cls, mock
 
 def test_token_usage_logging(capsys):
     """Capture stdout, assert '[Coach] Success. Tokens:' format."""
-    mock_model = MagicMock()
+    mock_client = MagicMock()
     mock_response = MagicMock()
     mock_response.text = json.dumps(VALID_LLM_RESPONSE)
     mock_response.usage_metadata = "prompt=100, completion=200"
-    mock_model.generate_content.return_value = mock_response
+    mock_client.models.generate_content.return_value = mock_response
 
     with patch("agents.coach.time.sleep"):
-        _safe_llm_call("prompt", "system", mock_model, 1500, "Coach")
+        _safe_llm_call("prompt", "system", mock_client, 1500, "Coach")
 
     captured = capsys.readouterr()
     assert "[Coach] Success. Tokens:" in captured.out

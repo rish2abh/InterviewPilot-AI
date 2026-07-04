@@ -13,6 +13,8 @@ import json
 import re
 import time
 
+# NOTE: Using google-genai SDK (not google-generativeai==0.8.3 from tech.md).
+# If this is intentional (SDK migration), update tech.md to reflect the approved library.
 from google import genai
 from google.genai import types
 
