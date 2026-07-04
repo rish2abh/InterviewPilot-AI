@@ -51,6 +51,9 @@ _STR_KEYS: frozenset[str] = frozenset(
 # Maximum allowed length for company / role inputs before truncation.
 _MAX_INPUT_LENGTH: int = 100
 
+# Valid values for the "difficulty" field in a Research_Dict.
+_VALID_DIFFICULTIES: tuple[str, ...] = ("easy", "medium", "hard", "expert")
+
 # Threshold: if fewer than this many fields can be populated from real data,
 # fall back to role-appropriate defaults and set error_flag=True.
 _GROUNDING_MIN_FIELDS: int = 5
@@ -169,10 +172,19 @@ def _safe_llm_call(
                 generation_config={"max_output_tokens": max_tokens},
             )
             text = response.text.strip()
-            # Strip markdown code fences (```json ... ``` and ``` ... ```)
-            text = re.sub(r"```json\s*", "", text)
-            text = re.sub(r"```\s*", "", text)
-            text = text.strip()
+            # Extract content from code fences if present (handles prose around fences)
+            # First try ```json ... ``` block
+            json_fence_match = re.search(r"```json\s*(.*?)```", text, re.DOTALL)
+            if json_fence_match:
+                text = json_fence_match.group(1).strip()
+            else:
+                # Try generic ``` ... ``` block
+                generic_fence_match = re.search(r"```\s*(.*?)```", text, re.DOTALL)
+                if generic_fence_match:
+                    text = generic_fence_match.group(1).strip()
+                else:
+                    # No fences found — use the text as-is (already stripped)
+                    pass
             result = json.loads(text)
             print(f"[{agent_name}] Success. Tokens: {response.usage_metadata}")
             return result
@@ -295,6 +307,13 @@ def _validate_research_dict(raw: dict) -> dict:
             raise ValueError(
                 f"Researcher: key '{key}' must be a non-empty string, got {val!r}"
             )
+
+    # Step 2b — difficulty must be one of the allowed values.
+    if raw["difficulty"] not in _VALID_DIFFICULTIES:
+        raise ValueError(
+            f"Researcher: key 'difficulty' must be one of {_VALID_DIFFICULTIES}, "
+            f"got {raw['difficulty']!r}"
+        )
 
     for key in _LIST_KEYS:
         val = raw[key]

@@ -1,0 +1,18 @@
+{
+  "enabled": true,
+  "name": "No Sensitive Print Statements",
+  "description": "Scans saved Python files for print() statements that could leak sensitive data (API keys, tokens, secrets, full user answers, session IDs with identifying data, or unparsed LLM response objects). Adds a warning comment above flagged lines without modifying the print statement itself.",
+  "version": "1",
+  "when": {
+    "type": "fileEdited",
+    "patterns": [
+      "agents/*.py",
+      "core/*.py",
+      "ui/*.py"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "Scan the saved file for print() statements that could leak sensitive data into logs or the console. Specifically look for prints that contain:\n\n1. API keys or any variable containing \"key\", \"token\", or \"secret\" (case-insensitive)\n2. Full user answer text (raw interview answers, e.g. variables like \"answer\", \"user_answer\", \"response_text\" being printed directly)\n3. Full session_id values alongside other identifying data\n4. Complete LLM response objects before they've been parsed (e.g. printing the raw response object rather than response.text)\n\nFor EACH flagged print() statement:\n- Add a comment directly ABOVE it: # WARNING: this print may leak sensitive data — review before deploying\n- Do NOT remove or modify the print statement itself\n- Do NOT change any other code, logic, or existing comments\n- Only add the warning comment above flagged print statements\n\nIf no sensitive print statements are found, take NO action — do not add unnecessary comments.\n\nAfter scanning, report every flagged line and why it was flagged. If nothing was flagged, say so."
+  }
+}

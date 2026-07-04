@@ -1,5 +1,6 @@
 ---
-inclusion: always
+inclusion: fileMatch
+fileMatchPattern: "agents/**/*.py"
 ---
 
 # Agent Design Rules

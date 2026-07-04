@@ -1351,3 +1351,406 @@ class TestErrorFlagAndDatabase:
             f"save_questions called with session_id={actual_session_id!r}, "
             f"expected {expected_session_id!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Task 17: Property-based test — P1: Output Count Invariant
+# ---------------------------------------------------------------------------
+# Requirement: 1.1, 6.1, 6.3
+
+from hypothesis import given, settings
+from hypothesis import strategies as st
+
+
+# Feature: question-generator-agent, Property 1: Output Count Invariant
+@settings(max_examples=100)
+@given(st.integers(min_value=0, max_value=20))
+def test_p1_output_count_invariant(n: int) -> None:
+    """Property 1: Output Count Invariant.
+
+    For any list length n (0–20) returned by the LLM, generate_questions
+    either returns a list of exactly TOTAL_QUESTIONS dicts or raises
+    QuestionGenerationError.  No other list length is ever returned.
+
+    **Validates: Requirements 1.1, 6.1, 6.3**
+    """
+    # Build a "valid-except-count" question dict template.
+    # All 7 fields are individually valid; only the count may differ from
+    # TOTAL_QUESTIONS depending on n.
+    def _make_valid_q(i: int) -> dict:
+        categories = ["technical"] * 4 + ["behavioral"] * 3 + ["situational"] * 2 + ["curveball"] * 1
+        category = categories[i % len(categories)]
+        return {
+            "id": f"llm-id-{i}",
+            "category": category,
+            "question": "Tell me about a challenging project you worked on recently?",
+            "ideal_keywords": ["architecture", "trade-offs", "delivery"],
+            "difficulty": (i % 10) + 1,
+            "follow_ups": [
+                "Can you elaborate on the trade-offs you made?",
+                "What would you do differently next time?",
+            ],
+            "scoring_hint": "Look for evidence of ownership and technical depth.",
+        }
+
+    # Generate n questions with valid individual fields.
+    llm_questions = [_make_valid_q(i) for i in range(n)]
+
+    # _safe_llm_call always returns the same list on both attempts so that
+    # the retry loop cannot succeed unless n == TOTAL_QUESTIONS.
+    with (
+        patch("agents.question_generator._safe_llm_call") as mock_llm,
+        patch("agents.question_generator.save_questions"),
+        patch("agents.question_generator.genai.configure"),
+        patch("agents.question_generator.genai.GenerativeModel"),
+        patch("time.sleep"),
+    ):
+        mock_llm.return_value = {"questions": llm_questions}
+
+        try:
+            result = generate_questions(VALID_RESEARCH, VALID_SESSION_ID, VALID_API_KEY)
+
+            # If no exception was raised, the result MUST be a list of exactly
+            # TOTAL_QUESTIONS dicts.
+            assert isinstance(result, list), (
+                f"Expected a list, got {type(result)}"
+            )
+            assert len(result) == TOTAL_QUESTIONS, (
+                f"Expected exactly {TOTAL_QUESTIONS} questions, got {len(result)} "
+                f"(LLM returned {n} questions)"
+            )
+            for q in result:
+                assert isinstance(q, dict), (
+                    f"Every item in result must be a dict, got {type(q)}"
+                )
+
+        except QuestionGenerationError:
+            # Raising QuestionGenerationError is also an accepted outcome —
+            # the invariant only forbids returning a list of the wrong length.
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Task 16: Unit tests — system prompt and rate limit compliance
+# ---------------------------------------------------------------------------
+# Requirement: 1.2, 1.4, 10.1, 10.4, 10.6
+
+import json as _json
+
+from agents.question_generator import SYSTEM_PROMPT
+from core.config import RATE_LIMIT_SLEEP
+
+
+class TestSystemPromptAndRateLimitCompliance:
+    """Unit tests for SYSTEM_PROMPT content and rate-limit / compression behaviour.
+
+    Covers:
+    - SYSTEM_PROMPT ends with the exact required JSON-only footer
+    - SYSTEM_PROMPT contains the "questions" key instruction
+    - SYSTEM_PROMPT contains the exact category distribution strings
+    - time.sleep is called with RATE_LIMIT_SLEEP as the first call in
+      generate_questions (before any LLM invocation)
+    - Research data is serialised with separators=(',',':') — no spaces in
+      the JSON that reaches the LLM prompt
+    """
+
+    # -----------------------------------------------------------------------
+    # Test 1: SYSTEM_PROMPT ends with the exact required suffix
+    # -----------------------------------------------------------------------
+
+    def test_system_prompt_ends_with_required_suffix(self) -> None:
+        """SYSTEM_PROMPT must end with the canonical JSON-only footer."""
+        required_suffix = (
+            "Return ONLY a JSON object. No markdown. No explanation. "
+            "No text before or after. Pure JSON only."
+        )
+        assert SYSTEM_PROMPT.endswith(required_suffix), (
+            f"SYSTEM_PROMPT does not end with the required suffix.\n"
+            f"Last 120 chars: {SYSTEM_PROMPT[-120:]!r}"
+        )
+
+    # -----------------------------------------------------------------------
+    # Test 2: SYSTEM_PROMPT contains "questions" key instruction
+    # -----------------------------------------------------------------------
+
+    def test_system_prompt_contains_questions_key_instruction(self) -> None:
+        """SYSTEM_PROMPT must instruct the LLM to use a 'questions' key."""
+        assert '"questions"' in SYSTEM_PROMPT or "'questions'" in SYSTEM_PROMPT, (
+            "SYSTEM_PROMPT must reference a 'questions' key in the output format"
+        )
+
+    # -----------------------------------------------------------------------
+    # Test 3: SYSTEM_PROMPT contains the exact distribution strings
+    # -----------------------------------------------------------------------
+
+    def test_system_prompt_contains_exact_technical_distribution(self) -> None:
+        """SYSTEM_PROMPT must contain the exact string for technical distribution."""
+        assert '4 questions with category "technical"' in SYSTEM_PROMPT, (
+            "SYSTEM_PROMPT missing: '4 questions with category \"technical\"'"
+        )
+
+    def test_system_prompt_contains_exact_behavioral_distribution(self) -> None:
+        """SYSTEM_PROMPT must contain the exact string for behavioral distribution."""
+        assert '3 questions with category "behavioral"' in SYSTEM_PROMPT, (
+            "SYSTEM_PROMPT missing: '3 questions with category \"behavioral\"'"
+        )
+
+    def test_system_prompt_contains_exact_situational_distribution(self) -> None:
+        """SYSTEM_PROMPT must contain the exact string for situational distribution."""
+        assert '2 questions with category "situational"' in SYSTEM_PROMPT, (
+            "SYSTEM_PROMPT missing: '2 questions with category \"situational\"'"
+        )
+
+    def test_system_prompt_contains_exact_curveball_distribution(self) -> None:
+        """SYSTEM_PROMPT must contain the exact string for curveball distribution."""
+        assert '1 question with category "curveball"' in SYSTEM_PROMPT, (
+            "SYSTEM_PROMPT missing: '1 question with category \"curveball\"'"
+        )
+
+    # -----------------------------------------------------------------------
+    # Test 4: time.sleep called with RATE_LIMIT_SLEEP as the first call
+    #         in generate_questions (before the LLM)
+    # -----------------------------------------------------------------------
+
+    def test_time_sleep_called_with_rate_limit_sleep_before_llm(self) -> None:
+        """time.sleep(RATE_LIMIT_SLEEP) must be the very first time.sleep call
+        in generate_questions, occurring before any LLM invocation."""
+        ten_questions = _make_valid_10_questions()
+
+        with (
+            patch("agents.question_generator.time.sleep") as mock_sleep,
+            patch("agents.question_generator.genai.configure"),
+            patch("agents.question_generator.genai.GenerativeModel") as mock_model_cls,
+            patch("agents.question_generator.save_questions"),
+        ):
+            # Set up the mock model to return valid questions
+            mock_model = MagicMock()
+            mock_model_cls.return_value = mock_model
+            mock_response = MagicMock()
+            mock_response.text = _json.dumps({"questions": ten_questions})
+            mock_response.usage_metadata = "prompt_token_count: 10 candidates_token_count: 50"
+            mock_model.generate_content.return_value = mock_response
+
+            generate_questions(VALID_RESEARCH, VALID_SESSION_ID, VALID_API_KEY)
+
+        # At least one sleep call must have occurred
+        assert mock_sleep.call_count >= 1, (
+            "time.sleep was never called during generate_questions"
+        )
+
+        # The very first sleep call must use RATE_LIMIT_SLEEP
+        first_sleep_call = mock_sleep.call_args_list[0]
+        assert first_sleep_call == call(RATE_LIMIT_SLEEP), (
+            f"First time.sleep call must be call({RATE_LIMIT_SLEEP}), "
+            f"got {first_sleep_call}"
+        )
+
+        # The LLM must have been called after sleep (sleep_call_count > 0 before
+        # generate_content is ever invoked — enforced by the pipeline order)
+        assert mock_model.generate_content.call_count >= 1, (
+            "generate_content was never called"
+        )
+
+    # -----------------------------------------------------------------------
+    # Test 5: compressed research uses separators=(',',':') — no spaces in
+    #         the serialised JSON that appears in the LLM prompt
+    # -----------------------------------------------------------------------
+
+    def test_compressed_research_has_no_spaces_in_prompt(self) -> None:
+        """The research_data JSON embedded in the LLM prompt must use
+        separators=(',',':') — assert no space after ':' or ',' in the
+        JSON portion of the prompt."""
+        ten_questions = _make_valid_10_questions()
+        captured_prompts: list[str] = []
+
+        def capture_prompt(prompt, system, model, max_tokens, agent_name):
+            captured_prompts.append(prompt)
+            return {"questions": ten_questions}
+
+        with (
+            patch("agents.question_generator._safe_llm_call", side_effect=capture_prompt),
+            patch("agents.question_generator.save_questions"),
+            patch("agents.question_generator.time.sleep"),
+        ):
+            generate_questions(VALID_RESEARCH, VALID_SESSION_ID, VALID_API_KEY)
+
+        assert captured_prompts, "Expected at least one _safe_llm_call invocation"
+        prompt = captured_prompts[0]
+
+        # Build the expected compressed form of the research data
+        expected_compressed = _json.dumps(VALID_RESEARCH, separators=(",", ":"))
+
+        # The compressed JSON string must appear verbatim in the prompt
+        assert expected_compressed in prompt, (
+            f"Expected compressed JSON (no spaces) to appear in the prompt.\n"
+            f"Expected to find: {expected_compressed!r}\n"
+            f"Prompt snippet: {prompt[:400]!r}"
+        )
+
+        # Extra guard: assert the uncompressed (spaced) form is NOT present
+        spaced_json = _json.dumps(VALID_RESEARCH)   # default: uses ", " and ": "
+        # Only check if the spaced form is meaningfully different
+        if spaced_json != expected_compressed:
+            assert spaced_json not in prompt, (
+                "Prompt contains the uncompressed (spaced) JSON — "
+                "separators=(',',':') was not applied"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Task 18: Property-based test — P2: Category Distribution Invariant
+# ---------------------------------------------------------------------------
+# Requirement: 2.1–2.4
+
+from collections import Counter
+
+from hypothesis import given, settings
+from hypothesis import strategies as st
+
+from agents.question_generator import _REQUIRED_DISTRIBUTION
+from core.config import RATE_LIMIT_SLEEP, TOTAL_QUESTIONS
+
+
+# Feature: question-generator-agent, Property 2: Category Distribution Invariant
+@settings(max_examples=100)
+@given(
+    categories=st.lists(
+        st.sampled_from(["technical", "behavioral", "situational", "curveball", "invalid"]),
+    )
+)
+def test_p2_category_distribution_invariant(categories: list[str]) -> None:
+    """**Validates: Requirements 2.1, 2.2, 2.3, 2.4**
+
+    For any category list generated by Hypothesis:
+    - Pad or trim ``categories`` to exactly TOTAL_QUESTIONS entries.
+    - Build a question list whose category sequence mirrors the padded list.
+    - Mock ``_safe_llm_call`` to always return those questions (both attempts).
+    - Assert: either ``QuestionGenerationError`` is raised OR the returned list
+      has a distribution that exactly equals ``_REQUIRED_DISTRIBUTION``.
+
+    A list with any other distribution must never be returned.
+    """
+    # ------------------------------------------------------------------
+    # 1. Pad / trim the generated category list to exactly TOTAL_QUESTIONS
+    # ------------------------------------------------------------------
+    padded: list[str] = (categories + ["technical"] * TOTAL_QUESTIONS)[:TOTAL_QUESTIONS]
+
+    # ------------------------------------------------------------------
+    # 2. Build question dicts using those categories (all other fields valid)
+    # ------------------------------------------------------------------
+    def _make_q(category: str, idx: int) -> dict:
+        return {
+            "id": f"llm-id-{idx}",
+            "category": category,
+            "question": "Tell me about a challenging project you worked on recently?",
+            "ideal_keywords": ["architecture", "trade-offs", "delivery"],
+            "difficulty": idx + 1,
+            "follow_ups": [
+                "Can you walk me through your approach step by step?",
+                "What would you do differently next time?",
+            ],
+            "scoring_hint": "Look for evidence of ownership and technical depth.",
+        }
+
+    questions_with_given_categories = [_make_q(cat, i) for i, cat in enumerate(padded)]
+    llm_response = {"questions": questions_with_given_categories}
+
+    # ------------------------------------------------------------------
+    # 3. Run generate_questions with all external dependencies mocked
+    # ------------------------------------------------------------------
+    raised_error: bool = False
+    result: list[dict] | None = None
+
+    with (
+        patch("agents.question_generator._safe_llm_call", return_value=llm_response),
+        patch("agents.question_generator.save_questions"),
+        patch("agents.question_generator.genai.configure"),
+        patch("agents.question_generator.genai.GenerativeModel"),
+        patch("agents.question_generator.time.sleep"),
+    ):
+        try:
+            result = generate_questions(VALID_RESEARCH, VALID_SESSION_ID, VALID_API_KEY)
+        except QuestionGenerationError:
+            raised_error = True
+
+    # ------------------------------------------------------------------
+    # 4. Assert the invariant
+    # ------------------------------------------------------------------
+    # Either an error was raised ...
+    if raised_error:
+        return  # QuestionGenerationError is the correct outcome for bad distributions
+
+    # ... or the returned list must have exactly the required distribution.
+    assert result is not None, "generate_questions returned None without raising"
+    assert isinstance(result, list), f"Expected list, got {type(result)}"
+    assert len(result) == TOTAL_QUESTIONS, (
+        f"Returned list length {len(result)} != {TOTAL_QUESTIONS}"
+    )
+
+    actual_dist = dict(Counter(q["category"] for q in result))
+    assert actual_dist == _REQUIRED_DISTRIBUTION, (
+        f"Returned distribution {actual_dist} does not match "
+        f"required distribution {_REQUIRED_DISTRIBUTION}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Task 19: Property-based test — P3: Difficulty Sequence Invariant
+# ---------------------------------------------------------------------------
+# Requirement: 3.2, 3.4
+
+from hypothesis import given, settings
+from hypothesis import strategies as st
+
+from agents.question_generator import _assign_ids_and_difficulties
+
+
+# Feature: question-generator-agent, Property 3: Difficulty Sequence Invariant
+@settings(max_examples=100)
+@given(
+    difficulties=st.lists(
+        st.integers(min_value=-5, max_value=15),
+        min_size=10,
+        max_size=10,
+    )
+)
+def test_difficulty_sequence_invariant(difficulties: list[int]) -> None:
+    """P3: Regardless of what difficulty values the LLM returns, after calling
+    _assign_ids_and_difficulties the question at 0-based index i always has
+    difficulty == i + 1.
+
+    Validates: Requirements 3.2, 3.4
+    """
+    # Build a valid 10-question list, injecting the generated difficulty values.
+    distribution = (
+        ["technical"] * 4
+        + ["behavioral"] * 3
+        + ["situational"] * 2
+        + ["curveball"] * 1
+    )
+    questions: list[dict] = [
+        {
+            "id": f"llm-id-{i}",
+            "category": distribution[i],
+            "question": "Tell me about a challenging project you worked on recently?",
+            "ideal_keywords": ["architecture", "trade-offs", "delivery"],
+            "difficulty": difficulties[i],   # LLM-returned value (may be arbitrary)
+            "follow_ups": [
+                "Can you walk me through your approach?",
+                "What would you do differently?",
+            ],
+            "scoring_hint": "Look for ownership and technical depth.",
+        }
+        for i in range(TOTAL_QUESTIONS)
+    ]
+
+    # Call _assign_ids_and_difficulties directly — no LLM or mocking needed.
+    result = _assign_ids_and_difficulties(questions)
+
+    # Assert: difficulty at index i must be exactly i + 1, for all i in 0..9.
+    for i in range(TOTAL_QUESTIONS):
+        assert result[i]["difficulty"] == i + 1, (
+            f"Expected questions[{i}]['difficulty'] == {i + 1}, "
+            f"but got {result[i]['difficulty']} "
+            f"(LLM-returned value was {difficulties[i]})"
+        )

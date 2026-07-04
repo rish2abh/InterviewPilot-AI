@@ -89,7 +89,7 @@ Tasks are grouped into three phases:
   - Test: valid inputs do not raise during input validation phase (requires mock for LLM + db)
   - **Requirement**: 1.6, 9.4
 
-- [ ] 10. Write unit tests — `_safe_llm_call` retry behaviour
+- [x] 10. Write unit tests — `_safe_llm_call` retry behaviour
   - Test: invalid JSON on attempt 0 → `time.sleep(RATE_LIMIT_SLEEP)` → corrective text appended to prompt → retry succeeds
   - Test: invalid JSON on both attempts → `QuestionGenerationError` raised with "JSON parse failure"
   - Test: API exception on attempt 0 → `time.sleep(ERROR_RETRY_SLEEP)` → retry succeeds
@@ -98,7 +98,7 @@ Tasks are grouped into three phases:
   - Test: `max_output_tokens` is passed as `MAX_TOKENS_COMPLEX` (assert via `generate_content` mock call args)
   - **Requirement**: 1.3, 9.1, 9.5, 10.3
 
-- [-] 11. Write unit tests — `validate_questions` boundary cases
+- [x] 11. Write unit tests — `validate_questions` boundary cases
   - Test: list of 9 questions → `(False, "Expected 10 questions, got 9")`
   - Test: list of 11 questions → `(False, ...)`
   - Test: question with `category="Technical"` (wrong case) → `(False, ...)`
@@ -148,7 +148,7 @@ Tasks are grouped into three phases:
   - Test: `save_questions` called with correct `session_id`
   - **Requirement**: 7.1–7.3, 8.1–8.4
 
-- [ ] 16. Write unit tests — system prompt and rate limit compliance
+- [-] 16. Write unit tests — system prompt and rate limit compliance
   - Test: `SYSTEM_PROMPT` ends with exact required suffix: `"Return ONLY a JSON object. No markdown. No explanation. No text before or after. Pure JSON only."`
   - Test: `SYSTEM_PROMPT` contains `"questions"` key instruction
   - Test: `SYSTEM_PROMPT` contains the exact distribution: `"4 questions with category \"technical\""`, `"3 questions with category \"behavioral\""`, `"2 questions with category \"situational\""`, `"1 question with category \"curveball\""`
@@ -156,7 +156,7 @@ Tasks are grouped into three phases:
   - Test: compressed research uses `separators=(',',':')` — assert no spaces in serialised output
   - **Requirement**: 1.2, 1.4, 10.1, 10.4, 10.6
 
-- [~] 17. Write property-based test — P1: Output Count Invariant
+- [-] 17. Write property-based test — P1: Output Count Invariant
   - Use `@given(st.integers(min_value=0, max_value=20))` for LLM-returned list length
   - Mock `_safe_llm_call` to return a questions list of the generated length with valid-except-count structure
   - Assert: result is either a list of exactly `TOTAL_QUESTIONS` dicts or `QuestionGenerationError` is raised
@@ -164,7 +164,7 @@ Tasks are grouped into three phases:
   - Tag: `# Feature: question-generator-agent, Property 1: Output Count Invariant`
   - **Requirement**: 1.1, 6.1, 6.3
 
-- [~] 18. Write property-based test — P2: Category Distribution Invariant
+- [-] 18. Write property-based test — P2: Category Distribution Invariant
   - Use `st.lists(st.sampled_from(["technical", "behavioral", "situational", "curveball", "invalid"]))` for category lists
   - Mock `_safe_llm_call` to always return questions with the generated category mix
   - Assert: if a list is returned, its distribution exactly equals `_REQUIRED_DISTRIBUTION`
@@ -172,7 +172,7 @@ Tasks are grouped into three phases:
   - Tag: `# Feature: question-generator-agent, Property 2: Category Distribution Invariant`
   - **Requirement**: 2.1–2.4
 
-- [~] 19. Write property-based test — P3: Difficulty Sequence Invariant
+- [ ] 19. Write property-based test — P3: Difficulty Sequence Invariant
   - Use `st.lists(st.integers(min_value=-5, max_value=15), min_size=10, max_size=10)` for LLM-returned difficulties
   - Build a valid 10-question list with LLM-returned difficulty values, mock `_safe_llm_call`
   - Call `_assign_ids_and_difficulties` directly on the list
