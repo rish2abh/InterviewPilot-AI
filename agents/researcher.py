@@ -13,7 +13,8 @@ import json
 import re
 import time
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 from core.config import (
     GEMINI_MODEL,
@@ -133,9 +134,10 @@ def _sanitize_input(value: str, field_name: str) -> str:
 def _safe_llm_call(
     prompt: str,
     system: str,
-    model,
+    client: genai.Client,
     max_tokens: int,
     agent_name: str,
+    tools: list | None = None,
 ) -> dict:
     """Call the Gemini model with retry logic for JSON parse failures and API errors.
 
@@ -153,10 +155,10 @@ def _safe_llm_call(
     Args:
         prompt: User-side prompt text sent to the model.
         system: System instruction string.
-        model: An initialised ``google.generativeai.GenerativeModel`` instance
-            configured with Search Grounding tools.
+        client: An initialised ``google.genai.Client`` instance.
         max_tokens: Maximum output token count to request.
         agent_name: Human-readable agent name used in log messages.
+        tools: Optional list of tools to pass in the generation config.
 
     Returns:
         A Python dict parsed from the model's JSON response.
@@ -167,9 +169,15 @@ def _safe_llm_call(
     """
     for attempt in range(2):
         try:
-            response = model.generate_content(
-                [system, prompt],
-                generation_config={"max_output_tokens": max_tokens},
+            config = types.GenerateContentConfig(
+                system_instruction=system,
+                max_output_tokens=max_tokens,
+                tools=tools,
+            )
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=prompt,
+                config=config,
             )
             text = response.text.strip()
             # Extract content from code fences if present (handles prose around fences)
@@ -408,11 +416,8 @@ def research_company(
     # Step 3: Configure Gemini with Search Grounding
     # Search grounding is enabled ONLY for the researcher (per tech.md).
     # ------------------------------------------------------------------
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel(
-        model_name=GEMINI_MODEL,
-        tools="google_search_retrieval",
-    )
+    client = genai.Client(api_key=api_key)
+    search_tool = types.Tool(google_search=types.GoogleSearch())
 
     # ------------------------------------------------------------------
     # Step 4: Build the search-optimised prompt
@@ -439,9 +444,10 @@ Return ONLY a JSON object with exactly these 8 keys: company, role, interview_ro
         raw = _safe_llm_call(
             prompt=user_prompt,
             system=SYSTEM_PROMPT,
-            model=model,
+            client=client,
             max_tokens=MAX_TOKENS_COMPLEX,
             agent_name="Researcher",
+            tools=[search_tool],
         )
         validated = _validate_research_dict(raw)
         return validated

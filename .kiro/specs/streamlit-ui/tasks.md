@@ -194,7 +194,7 @@ Implement the complete Streamlit UI (`ui/app.py`) for the Mock Interview Stress 
     - Generate Report_Dicts with top_3_strengths and top_3_improvements as lists of exactly 3 random strings
     - Verify two separate rendered lists each contain exactly 3 items
 
-- [ ] 9. Final checkpoint — Ensure all tests pass
+- [x] 9. Final checkpoint — Ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
   - Verify: no magic numbers in ui/app.py, all session_state keys documented, type hints on all functions, only approved imports
 

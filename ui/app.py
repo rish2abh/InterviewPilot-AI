@@ -282,14 +282,16 @@ def _render_report_screen(session_id: str) -> None:
     # Top 3 strengths
     st.subheader("Top 3 Strengths")
     strengths_md = "\n".join(
-        f"{i+1}. {s}" for i, s in enumerate(report["top_3_strengths"])
+        f"{i+1}. {' '.join(s.split()).strip()}"
+        for i, s in enumerate(report["top_3_strengths"])
     )
     st.markdown(strengths_md)
 
     # Top 3 improvements
     st.subheader("Top 3 Areas for Improvement")
     improvements_md = "\n".join(
-        f"{i+1}. {s}" for i, s in enumerate(report["top_3_improvements"])
+        f"{i+1}. {' '.join(s.split()).strip()}"
+        for i, s in enumerate(report["top_3_improvements"])
     )
     st.markdown(improvements_md)
 

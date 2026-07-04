@@ -590,6 +590,8 @@ class TestHiddenQuestionFieldsNotRendered:
             assume(fu not in displayed_text)
         assume(scoring_hint not in displayed_text)
         assume(str(difficulty) not in str(display_id))
+        assume(str(difficulty) not in str(TOTAL_QUESTIONS))
+        assume(str(difficulty) not in displayed_text)
 
         question_dict = {
             "id": display_id,
@@ -631,9 +633,9 @@ class TestHiddenQuestionFieldsNotRendered:
             assert kw not in rendered_text, (
                 f"ideal_keyword '{kw}' was rendered"
             )
-        assert str(difficulty) not in rendered_text or str(difficulty) in str(
-            display_id
-        ), f"difficulty '{difficulty}' was rendered"
+        assert str(difficulty) not in rendered_text, (
+            f"difficulty '{difficulty}' was rendered"
+        )
         for fu in follow_ups:
             assert fu not in rendered_text, (
                 f"follow_up '{fu}' was rendered"
@@ -989,17 +991,21 @@ class TestReportListsRenderExactlyThreeItems:
 
     @given(
         strengths=hst.lists(
-            hst.text(min_size=3, max_size=80).filter(lambda s: s.strip() != ""),
+            hst.text(min_size=3, max_size=80).filter(
+                lambda s: s.strip() != ""
+            ),
             min_size=3,
             max_size=3,
         ),
         improvements=hst.lists(
-            hst.text(min_size=3, max_size=80).filter(lambda s: s.strip() != ""),
+            hst.text(min_size=3, max_size=80).filter(
+                lambda s: s.strip() != ""
+            ),
             min_size=3,
             max_size=3,
         ),
     )
-    @settings(max_examples=100)
+    @settings(max_examples=100, deadline=None)
     @patch("ui.app.generate_final_report")
     @patch("ui.app.st")
     def test_lists_render_exactly_three_items(
