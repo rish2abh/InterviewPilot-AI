@@ -171,12 +171,20 @@ def _safe_llm_call(
     """
     for attempt in range(2):
         try:
-            config = types.GenerateContentConfig(
-                system_instruction=system,
-                max_output_tokens=max_tokens,
-                response_mime_type="application/json",
-                tools=tools,
-            )
+            config_kwargs = {
+                "system_instruction": system,
+                "max_output_tokens": max_tokens,
+                "thinking_config": types.ThinkingConfig(thinking_budget=0),
+            }
+            if tools:
+                config_kwargs["tools"] = tools
+                # response_mime_type is NOT supported alongside tools — rely on
+                # the system prompt's "Return ONLY a JSON object" instruction plus
+                # the existing markdown-fence-stripping regex below to extract JSON
+                # from plain-text output instead.
+            else:
+                config_kwargs["response_mime_type"] = "application/json"
+            config = types.GenerateContentConfig(**config_kwargs)
             response = client.models.generate_content(
                 model=GEMINI_MODEL,
                 contents=prompt,
@@ -347,7 +355,7 @@ def _validate_research_dict(raw: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def research_company(
+def research_company(  # Consider splitting this function
     company: str,
     role: str,
     level: str,

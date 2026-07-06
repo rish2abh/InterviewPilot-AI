@@ -41,7 +41,7 @@ GEMINI_MODEL: str = "gemini-2.5-flash"
 MAX_TOKENS_SIMPLE: int = 1000
 
 # Max output tokens for complex generation agents (Researcher, QuestionGenerator).
-MAX_TOKENS_COMPLEX: int = 2000
+MAX_TOKENS_COMPLEX: int = 3000
 
 # Max output tokens for the long-form final report (Coach).
 MAX_TOKENS_REPORT: int = 3000
