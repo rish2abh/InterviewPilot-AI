@@ -35,7 +35,7 @@ GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
 # ---------------------------------------------------------------------------
 
 # The only permitted model for every LLM call in this project.
-GEMINI_MODEL: str = "gemini-2.0-flash"
+GEMINI_MODEL: str = "gemini-2.0-flash-lite"
 
 # Max output tokens for simple/fast agents (Evaluator).
 MAX_TOKENS_SIMPLE: int = 1500
