@@ -22,6 +22,7 @@ Design Principles:
 """
 
 import json
+import re
 import time
 import uuid
 from typing import Any
@@ -42,6 +43,8 @@ from core.config import (
     STATE_DONE,
     STATE_ERROR,
     TOTAL_QUESTIONS,
+    MIN_QUESTIONS,
+    MAX_QUESTIONS,
     MAX_FOLLOW_UPS,
     RATE_LIMIT_SLEEP,
     ERROR_RETRY_SLEEP,
@@ -85,7 +88,7 @@ MAX_INPUT_LENGTH: int = 200
 MAX_ERROR_REASON_LENGTH: int = 500
 
 # Maximum retry attempts for agent calls on 429 rate-limit errors.
-MAX_RETRIES: int = 2
+MAX_RETRIES: int = 3
 
 # ---------------------------------------------------------------------------
 # State transition map — defines all permitted (source → target) transitions.
@@ -216,8 +219,8 @@ def _call_with_retry(agent_fn, args: tuple, session_id: str) -> Any:
     """Call an agent function with automatic retry on 429 rate-limit errors.
 
     Retries up to MAX_RETRIES times when the exception message contains '429'.
-    Sleeps ERROR_RETRY_SLEEP seconds between retries. All other exceptions
-    propagate immediately.
+    Parses the suggested retry delay from the error message when available,
+    otherwise falls back to exponential backoff starting at ERROR_RETRY_SLEEP.
 
     Args:
         agent_fn: The agent callable to invoke.
@@ -235,9 +238,17 @@ def _call_with_retry(agent_fn, args: tuple, session_id: str) -> Any:
         try:
             return agent_fn(*args)
         except Exception as e:
-            if "429" in str(e) and attempt < MAX_RETRIES:
-                print(f"[Orchestrator] 429 error, retry {attempt + 1}/{MAX_RETRIES}")
-                time.sleep(ERROR_RETRY_SLEEP)
+            error_str = str(e)
+            if "429" in error_str and attempt < MAX_RETRIES:
+                # Try to parse retry delay from error message
+                retry_match = re.search(r"retry in (\d+(?:\.\d+)?)s", error_str, re.IGNORECASE)
+                if retry_match:
+                    wait_time = int(float(retry_match.group(1))) + 2
+                else:
+                    # Exponential backoff: 30s, 60s
+                    wait_time = 30 * (2 ** attempt)
+                print(f"[Orchestrator] 429 error, retry {attempt + 1}/{MAX_RETRIES} after {wait_time}s")
+                time.sleep(wait_time)
             else:
                 raise
 
@@ -292,19 +303,23 @@ def _validate_research_dict(data: object) -> None:
         raise ValueError(f"Researcher output missing keys: {missing}")
 
 
-def _validate_questions_list(data: object) -> None:
-    """Validate that QuestionGenerator agent output is a list of TOTAL_QUESTIONS dicts.
+def _validate_questions_list(data: object, num_questions: int = TOTAL_QUESTIONS) -> None:
+    """Validate that QuestionGenerator agent output is a list of num_questions dicts.
 
     Each item must be a dict containing all 7 required question keys.
+
+    Args:
+        data: The output to validate.
+        num_questions: Expected number of questions in the list.
 
     Raises:
         ValueError: If data is not a list, has wrong length, or items are invalid.
     """
     if not isinstance(data, list):
         raise ValueError("QuestionGenerator output is not a list")
-    if len(data) != TOTAL_QUESTIONS:
+    if len(data) != num_questions:
         raise ValueError(
-            f"QuestionGenerator returned {len(data)} questions, expected {TOTAL_QUESTIONS}"
+            f"QuestionGenerator returned {len(data)} questions, expected {num_questions}"
         )
     for i, q in enumerate(data):
         if not isinstance(q, dict):
@@ -408,20 +423,21 @@ def get_current_state(session_id: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def start_session(company: str, role: str, level: str) -> str:
+def start_session(company: str, role: str, level: str, num_questions: int = TOTAL_QUESTIONS) -> str:  # Consider splitting this function
     """Create a new interview session: research the company and generate questions.
 
     Flow:
     1. Validate GEMINI_API_KEY is non-empty
     2. Validate and strip company, role, level (non-empty after strip, ≤ MAX_INPUT_LENGTH)
-    3. Generate session_id, create session in DB (state=SETUP)
-    4. Transition SETUP → RESEARCHING
-    5. Call research_company with retry, validate output, save to DB
-    6. Sleep RATE_LIMIT_SLEEP between agent calls
-    7. Transition RESEARCHING → GENERATING
-    8. Call generate_questions with retry, validate output (save handled by agent)
-    9. Transition GENERATING → READY
-    10. Return session_id
+    3. Validate num_questions is within MIN_QUESTIONS–MAX_QUESTIONS range
+    4. Generate session_id, create session in DB (state=SETUP)
+    5. Transition SETUP → RESEARCHING
+    6. Call research_company with retry, validate output, save to DB
+    7. Sleep RATE_LIMIT_SLEEP between agent calls
+    8. Transition RESEARCHING → GENERATING
+    9. Call generate_questions with retry, validate output (save handled by agent)
+    10. Transition GENERATING → READY
+    11. Return session_id
 
     On any agent failure: _handle_error transitions to ERROR, then re-raise.
 
@@ -429,13 +445,15 @@ def start_session(company: str, role: str, level: str) -> str:
         company: Company name (stripped, 1 to MAX_INPUT_LENGTH chars).
         role: Job role (stripped, 1 to MAX_INPUT_LENGTH chars).
         level: Experience level (stripped, 1 to MAX_INPUT_LENGTH chars).
+        num_questions: Number of questions to generate (MIN_QUESTIONS–MAX_QUESTIONS).
 
     Returns:
         The session_id (UUID string) for the newly created session.
 
     Raises:
         ValueError: If GEMINI_API_KEY is empty, or company/role/level is
-                    empty/whitespace-only/exceeds MAX_INPUT_LENGTH after strip.
+                    empty/whitespace-only/exceeds MAX_INPUT_LENGTH after strip,
+                    or num_questions is out of range.
     """
     # Step 1: Validate API key
     if not GEMINI_API_KEY or not GEMINI_API_KEY.strip():
@@ -454,15 +472,21 @@ def start_session(company: str, role: str, level: str) -> str:
     role = role.strip()
     level = level.strip()
 
-    # Step 3: Create session
+    # Step 3: Validate num_questions
+    if not isinstance(num_questions, int) or num_questions < MIN_QUESTIONS or num_questions > MAX_QUESTIONS:
+        raise ValueError(
+            f"num_questions must be an integer between {MIN_QUESTIONS} and {MAX_QUESTIONS}, got {num_questions}"
+        )
+
+    # Step 4: Create session
     session_id = str(uuid.uuid4())
-    create_session(session_id, company, role, level)
+    create_session(session_id, company, role, level, num_questions)
 
     try:
-        # Step 4: Transition to RESEARCHING
+        # Step 5: Transition to RESEARCHING
         _transition(session_id, STATE_SETUP, STATE_RESEARCHING)
 
-        # Step 5: Call researcher with retry and validate
+        # Step 6: Call researcher with retry and validate
         research_data = _call_with_retry(
             research_company,
             (company, role, level, GEMINI_API_KEY),
@@ -471,21 +495,21 @@ def start_session(company: str, role: str, level: str) -> str:
         _validate_research_dict(research_data)
         save_research(session_id, research_data)
 
-        # Step 6: Rate-limit sleep between consecutive agent LLM calls
+        # Step 7: Rate-limit sleep between consecutive agent LLM calls
         time.sleep(RATE_LIMIT_SLEEP)
 
-        # Step 7: Transition to GENERATING
+        # Step 8: Transition to GENERATING
         _transition(session_id, STATE_RESEARCHING, STATE_GENERATING)
 
-        # Step 8: Call question generator with retry and validate
+        # Step 9: Call question generator with retry and validate
         questions = _call_with_retry(
             generate_questions,
-            (research_data, session_id, GEMINI_API_KEY),
+            (research_data, session_id, GEMINI_API_KEY, num_questions),
             session_id,
         )
-        _validate_questions_list(questions)
+        _validate_questions_list(questions, num_questions)
 
-        # Step 9: Transition to READY
+        # Step 10: Transition to READY
         _transition(session_id, STATE_GENERATING, STATE_READY)
 
     except QuestionGenerationError as e:
@@ -495,7 +519,7 @@ def start_session(company: str, role: str, level: str) -> str:
         _handle_error(session_id, str(e))
         raise
 
-    # Step 10: Return session ID
+    # Step 11: Return session ID
     return session_id
 
 
@@ -508,7 +532,8 @@ def get_current_question(session_id: str) -> dict:
     """Retrieve the current interview question for a session.
 
     Transitions from READY or NEXT_Q to ASKING (first access).
-    Idempotent when already in ASKING (returns same question, no transition).
+    Idempotent when already in ASKING or FOLLOW_UP (returns same question,
+    no transition).
 
     Args:
         session_id: UUID string identifying the session.
@@ -526,28 +551,43 @@ def get_current_question(session_id: str) -> dict:
     _validate_not_terminal(session)
 
     state = session["state"]
+    num_questions: int = session.get("num_questions", TOTAL_QUESTIONS)
 
-    # Only valid from READY, ASKING, or NEXT_Q
-    if state not in (STATE_READY, STATE_ASKING, STATE_NEXT_Q):
+    # Only valid from READY, ASKING, NEXT_Q, FOLLOW_UP, or EVALUATING
+    # (EVALUATING can occur if a previous evaluation crashed mid-flight)
+    if state not in (STATE_READY, STATE_ASKING, STATE_NEXT_Q, STATE_FOLLOW_UP, STATE_EVALUATING):
         raise ValueError(
             f"Cannot get question in state {state}; "
-            f"expected READY, ASKING, or NEXT_Q"
+            f"expected READY, ASKING, NEXT_Q, FOLLOW_UP, or EVALUATING"
         )
 
     # Determine current question index from answer count
     answers = get_answers(session_id)
-    q_index = len(answers)
 
-    # Guard: all questions already answered
-    if q_index >= TOTAL_QUESTIONS:
+    # In FOLLOW_UP or EVALUATING state, we are re-evaluating the same question
+    if state in (STATE_FOLLOW_UP, STATE_EVALUATING):
+        q_index = len(answers) - 1 if answers else 0
+    else:
+        q_index = len(answers)
+
+    # Guard: all questions already answered (not applicable in FOLLOW_UP/EVALUATING)
+    if q_index >= num_questions and state not in (STATE_FOLLOW_UP, STATE_EVALUATING):
         raise ValueError(
-            f"All {TOTAL_QUESTIONS} questions have been answered"
+            f"All {num_questions} questions have been answered"
         )
 
-    # Transition if needed (idempotent in ASKING)
+    # Guard: negative index (no answers yet but in FOLLOW_UP — shouldn't happen)
+    if q_index < 0:
+        raise ValueError("No answers exist for follow-up evaluation")
+
+    # Transition if needed (idempotent in ASKING or FOLLOW_UP)
     if state in (STATE_READY, STATE_NEXT_Q):
         _transition(session_id, state, STATE_ASKING)
-    # If already ASKING: no transition (idempotent)
+    elif state == STATE_EVALUATING:
+        # Stuck in EVALUATING from a crashed evaluation — revert to ASKING
+        update_session_state(session_id, STATE_ASKING)
+        print(f"[Orchestrator] Recovered stuck EVALUATING → ASKING")
+    # If already ASKING or FOLLOW_UP: no transition (idempotent)
 
     # Retrieve question from DB
     question = get_question(session_id, q_index)
@@ -557,6 +597,46 @@ def get_current_question(session_id: str) -> dict:
         )
 
     return question
+
+
+# ---------------------------------------------------------------------------
+# Public API — get_current_follow_up_text
+# ---------------------------------------------------------------------------
+
+
+def get_current_follow_up_text(session_id: str) -> str | None:
+    """Retrieve the current follow-up question text for a session in FOLLOW_UP state.
+
+    Returns the follow-up question string that should be displayed to the user.
+    Uses the follow_up_count (already incremented) to look up the correct
+    follow-up from the question dict's follow_ups list.
+
+    Args:
+        session_id: UUID string identifying the session.
+
+    Returns:
+        The follow-up question string, or None if not in FOLLOW_UP state
+        or no follow-up is available.
+    """
+    session = _validate_session_exists(session_id)
+    state = session["state"]
+
+    if state != STATE_FOLLOW_UP:
+        return None
+
+    # In FOLLOW_UP, the current question is at len(answers) - 1
+    answers = get_answers(session_id)
+    if not answers:
+        return None
+
+    q_index = len(answers) - 1
+    question_dict = get_question(session_id, q_index)
+    if question_dict is None:
+        return None
+
+    # Count was already incremented, so the displayed follow-up is at count - 1
+    follow_up_count = get_follow_up_count(session_id, q_index)
+    return get_follow_up_question(question_dict, follow_up_count - 1)
 
 
 # ---------------------------------------------------------------------------
@@ -604,13 +684,15 @@ def generate_final_report(session_id: str) -> dict:
     # Step 3: Validate not terminal (catches ERROR state)
     _validate_not_terminal(session)
 
+    num_questions: int = session.get("num_questions", TOTAL_QUESTIONS)
+
     # Step 4: Verify all questions answered
     answers = get_answers(session_id)
-    if len(answers) < TOTAL_QUESTIONS:
-        missing = TOTAL_QUESTIONS - len(answers)
+    if len(answers) < num_questions:
+        missing = num_questions - len(answers)
         raise ValueError(
             f"Cannot generate report: {missing} questions still unanswered "
-            f"({len(answers)}/{TOTAL_QUESTIONS} completed)"
+            f"({len(answers)}/{num_questions} completed)"
         )
 
     try:
@@ -647,7 +729,7 @@ def generate_final_report(session_id: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def submit_answer(session_id: str, answer_text: str) -> dict:
+def submit_answer(session_id: str, answer_text: str) -> dict:  # Consider splitting this function
     """Submit and evaluate a user's answer to the current interview question.
 
     Handles the full evaluation flow including follow-up question triggering.
@@ -697,6 +779,8 @@ def submit_answer(session_id: str, answer_text: str) -> dict:
             f"Cannot submit answer in state {state}; expected ASKING or FOLLOW_UP"
         )
 
+    num_questions: int = session.get("num_questions", TOTAL_QUESTIONS)
+
     # Step 4: Determine question index
     answers = get_answers(session_id)
     q_index = len(answers)
@@ -706,8 +790,11 @@ def submit_answer(session_id: str, answer_text: str) -> dict:
         q_index = len(answers) - 1  # Last answered question
 
     # Guard: check we're not beyond total questions
-    if q_index >= TOTAL_QUESTIONS:
-        raise ValueError(f"All {TOTAL_QUESTIONS} questions already answered")
+    if q_index >= num_questions:
+        raise ValueError(f"All {num_questions} questions already answered")
+
+    # Remember the pre-evaluation state for recovery on failure
+    pre_eval_state = state
 
     try:
         # Step 6: Transition to EVALUATING
@@ -737,7 +824,7 @@ def submit_answer(session_id: str, answer_text: str) -> dict:
         # Step 9: Determine next state
         result = dict(evaluation)  # copy for return
 
-        is_last_question = (q_index >= TOTAL_QUESTIONS - 1)
+        is_last_question = (q_index >= num_questions - 1)
 
         if evaluation["trigger_follow_up"]:
             # Check follow-up count
@@ -770,7 +857,15 @@ def submit_answer(session_id: str, answer_text: str) -> dict:
                 _transition(session_id, STATE_EVALUATING, STATE_NEXT_Q)
 
     except Exception as e:
-        _handle_error(session_id, str(e))
+        # Revert state to pre-evaluation state so user can retry
+        # instead of permanently transitioning to ERROR
+        try:
+            update_session_state(session_id, pre_eval_state)
+            # WARNING: this print may leak sensitive data — review before deploying
+            print(f"[Orchestrator] Evaluation failed, reverted state to {pre_eval_state}: {e}")
+        except Exception:
+            # If revert fails, fall back to terminal ERROR state
+            _handle_error(session_id, str(e))
         raise
 
     # Step 10: Return evaluation (with optional follow_up_question)

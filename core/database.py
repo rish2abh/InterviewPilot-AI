@@ -109,12 +109,13 @@ def init_db() -> None:
     with conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS sessions (
-                session_id  TEXT PRIMARY KEY,
-                company     TEXT NOT NULL,
-                role        TEXT NOT NULL,
-                level       TEXT NOT NULL,
-                state       TEXT NOT NULL,
-                created_at  TEXT NOT NULL
+                session_id    TEXT PRIMARY KEY,
+                company       TEXT NOT NULL,
+                role          TEXT NOT NULL,
+                level         TEXT NOT NULL,
+                state         TEXT NOT NULL,
+                num_questions INTEGER NOT NULL DEFAULT 5,
+                created_at    TEXT NOT NULL
             )
         """)
         conn.execute("""
@@ -164,6 +165,7 @@ def create_session(
     company: str,
     role: str,
     level: str,
+    num_questions: int = 5,
 ) -> None:
     """Insert a new session row into the ``sessions`` table.
 
@@ -175,6 +177,7 @@ def create_session(
         company: Company name as entered by the user.
         role: Job role as entered by the user.
         level: Experience level as entered by the user (e.g. "junior", "senior").
+        num_questions: Number of questions for this session (2–15).
 
     Returns:
         None
@@ -189,10 +192,10 @@ def create_session(
     with conn:
         conn.execute(
             """
-            INSERT INTO sessions (session_id, company, role, level, state, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO sessions (session_id, company, role, level, state, num_questions, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (session_id, company, role, level, STATE_SETUP, _now_iso()),
+            (session_id, company, role, level, STATE_SETUP, num_questions, _now_iso()),
         )
     conn.close()
 
@@ -214,7 +217,7 @@ def get_session(session_id: str) -> dict | None:
     conn = _get_connection()
     conn.row_factory = sqlite3.Row
     cursor = conn.execute(
-        "SELECT session_id, company, role, level, state, created_at "
+        "SELECT session_id, company, role, level, state, num_questions, created_at "
         "FROM sessions WHERE session_id = ?",
         (session_id,),
     )
@@ -265,7 +268,7 @@ def save_research(session_id: str, research_dict: dict) -> None:
 
 
 def save_questions(session_id: str, questions_list: list[dict]) -> None:
-    """Persist all 10 generated questions for a session.
+    """Persist all generated questions for a session.
 
     Each element of ``questions_list`` is one Question_Dict entry from the
     QuestionGenerator output (keys: ``id, category, question, ideal_keywords,
@@ -276,21 +279,20 @@ def save_questions(session_id: str, questions_list: list[dict]) -> None:
 
     Args:
         session_id: UUID string identifying the owning session.
-        questions_list: List of exactly ``TOTAL_QUESTIONS`` question dicts,
+        questions_list: List of question dicts (2–15 items),
             each conforming to the QuestionGenerator 7-key contract.
 
     Returns:
         None
 
     Raises:
-        ValueError: If ``questions_list`` does not contain exactly
-            ``TOTAL_QUESTIONS`` items, or if any item is missing required keys.
+        ValueError: If ``questions_list`` is empty, or if any item is missing required keys.
         sqlite3.Error: On any database error.
     """
-    from core.config import TOTAL_QUESTIONS  # local import; avoids potential circular refs
-    if len(questions_list) != TOTAL_QUESTIONS:
+    from core.config import MIN_QUESTIONS, MAX_QUESTIONS  # local import; avoids potential circular refs
+    if not questions_list or len(questions_list) < MIN_QUESTIONS or len(questions_list) > MAX_QUESTIONS:
         raise ValueError(
-            f"save_questions: expected {TOTAL_QUESTIONS} questions, got {len(questions_list)}"
+            f"save_questions: expected {MIN_QUESTIONS}-{MAX_QUESTIONS} questions, got {len(questions_list)}"
         )
     required = {"id", "category", "question", "ideal_keywords", "difficulty", "follow_ups", "scoring_hint"}
     for i, q in enumerate(questions_list):

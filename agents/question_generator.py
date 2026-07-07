@@ -58,16 +58,8 @@ class QuestionGenerationError(Exception):
 # Module-level constants
 # ---------------------------------------------------------------------------
 
-# Required category distribution: {category: required_count}
-_REQUIRED_DISTRIBUTION: dict[str, int] = {
-    "technical": 4,
-    "behavioral": 3,
-    "situational": 2,
-    "curveball": 1,
-}
-
 # Valid category strings (exact, case-sensitive).
-_VALID_CATEGORIES: frozenset[str] = frozenset(_REQUIRED_DISTRIBUTION.keys())
+_VALID_CATEGORIES: frozenset[str] = frozenset(["technical", "behavioral", "situational", "curveball"])
 
 # Per-category fallback follow-up strings used when the LLM returns too few
 # or invalid follow-up items.
@@ -93,17 +85,15 @@ _FALLBACK_FOLLOW_UPS: dict[str, list[str]] = {
 # System prompt — must end with the exact required footer per agents.md.
 SYSTEM_PROMPT: str = """You are an expert technical interview question designer. Your task is to generate exactly {total} company-specific interview questions based on the research data provided.
 
-QUESTION DISTRIBUTION — you MUST follow this exactly:
-- 4 questions with category "technical"
-- 3 questions with category "behavioral"
-- 2 questions with category "situational"
-- 1 question with category "curveball"
+QUESTION DISTRIBUTION — distribute categories across {total} questions:
+- Use a mix of "technical", "behavioral", "situational", and "curveball" categories
+- At least 1 question of each category type when total >= 4
+- For fewer than 4 questions, prioritize "technical" and "behavioral"
+- "technical" should make up the largest share
 
 DIFFICULTY PROGRESSION — questions MUST get progressively harder:
 - Question 1: difficulty 1 (easiest)
-- Question 2: difficulty 2
-- ...
-- Question 10: difficulty 10 (hardest)
+- Question {total}: difficulty {total} (hardest)
 Each question's difficulty field must equal its 1-based position in the list.
 
 OUTPUT FORMAT — return a JSON object with a "questions" key containing a list of exactly {total} objects. Each object must have exactly these 7 keys:
@@ -113,7 +103,7 @@ OUTPUT FORMAT — return a JSON object with a "questions" key containing a list 
   "category": "<one of: technical, behavioral, situational, curveball>",
   "question": "<interview question text, at least 20 characters>",
   "ideal_keywords": ["<keyword1>", "<keyword2>", "<keyword3>"],
-  "difficulty": <integer 1-10>,
+  "difficulty": <integer 1-{total}>,
   "follow_ups": ["<follow-up question 1>", "<follow-up question 2>"],
   "scoring_hint": "<brief guidance on what a strong answer should cover>"
 }}
@@ -169,13 +159,12 @@ def _safe_llm_call(
         QuestionGenerationError: If JSON parsing or the API call fails on
             both attempts.
     """
-    for attempt in range(2):
+    for attempt in range(3):
         try:
             config = types.GenerateContentConfig(
                 system_instruction=system,
                 max_output_tokens=max_tokens,
                 response_mime_type="application/json",
-                thinking_config=types.ThinkingConfig(thinking_budget=0),
             )
             response = client.models.generate_content(
                 model=GEMINI_MODEL,
@@ -196,55 +185,32 @@ def _safe_llm_call(
             return result
         except json.JSONDecodeError as e:
             print(f"[{agent_name}] JSON fail attempt {attempt + 1}: {e}")
-            if attempt == 0:
+            if attempt < 2:
                 time.sleep(RATE_LIMIT_SLEEP)
-                prompt += "\n\nRETURN ONLY RAW JSON. NO TEXT BEFORE OR AFTER."
+                if attempt == 0:
+                    prompt += "\n\nRETURN ONLY RAW JSON. NO TEXT BEFORE OR AFTER."
             else:
                 raise QuestionGenerationError(
-                    f"Question_Generator_Agent: JSON parse failure after 2 attempts: {e}"
+                    f"Question_Generator_Agent: JSON parse failure after 3 attempts: {e}"
                 )
         except Exception as e:
+            error_str = str(e)
             print(f"[{agent_name}] API error attempt {attempt + 1}: {e}")
-            if attempt == 0:
-                time.sleep(ERROR_RETRY_SLEEP)
+            if attempt < 2:
+                if "429" in error_str:
+                    retry_match = re.search(r"retry in (\d+(?:\.\d+)?)s", error_str, re.IGNORECASE)
+                    if retry_match:
+                        wait_time = int(float(retry_match.group(1))) + 2
+                    else:
+                        wait_time = 30 * (attempt + 1)
+                    print(f"[{agent_name}] Rate limited, waiting {wait_time}s...")
+                    time.sleep(wait_time)
+                else:
+                    time.sleep(ERROR_RETRY_SLEEP)
             else:
                 raise QuestionGenerationError(
-                    f"Question_Generator_Agent: API error after 2 attempts: {e}"
+                    f"Question_Generator_Agent: API error after 3 attempts: {e}"
                 )
-
-
-def _get_distribution(questions: list[dict]) -> dict[str, int]:
-    """Count the category occurrences in a list of question dicts.
-
-    Args:
-        questions: List of Question_Dict objects, each expected to have a
-            ``"category"`` key.
-
-    Returns:
-        A dict mapping each category string that appears in the list to its
-        occurrence count.  Categories with zero occurrences are not included.
-    """
-    counts: dict[str, int] = {}
-    for q in questions:
-        cat = q.get("category", "")
-        counts[cat] = counts.get(cat, 0) + 1
-    return counts
-
-
-def _distribution_is_valid(questions: list[dict]) -> bool:
-    """Return True if ``questions`` satisfies the required category distribution.
-
-    The required distribution is 4 technical, 3 behavioral, 2 situational,
-    1 curveball — defined in ``_REQUIRED_DISTRIBUTION``.  Any extra or
-    invalid category keys cause this to return False.
-
-    Args:
-        questions: List of Question_Dict objects to check.
-
-    Returns:
-        True if and only if the counts exactly match ``_REQUIRED_DISTRIBUTION``.
-    """
-    return _get_distribution(questions) == _REQUIRED_DISTRIBUTION
 
 
 def _normalize_follow_ups(question: dict) -> dict:
@@ -316,34 +282,34 @@ def _assign_ids_and_difficulties(questions: list[dict]) -> list[dict]:
     return questions
 
 
-def validate_questions(questions: list[dict]) -> tuple[bool, str]:
+def validate_questions(questions: list[dict], num_questions: int = TOTAL_QUESTIONS) -> tuple[bool, str]:
     """Validate a list of Question_Dict objects for structural correctness.
 
     Checks performed (in order):
-    1. Exactly ``TOTAL_QUESTIONS`` items in the list.
+    1. Exactly ``num_questions`` items in the list.
     2. Each item is a dict.
     3. All 7 required keys present per question.
     4. ``id`` is a non-empty string.
     5. ``category`` is one of the four valid values.
     6. ``question`` text is at least ``MIN_QUESTION_LENGTH`` characters.
     7. ``ideal_keywords`` is a non-empty list of strings.
-    8. ``difficulty`` is an integer 1–10.
+    8. ``difficulty`` is an integer 1–num_questions.
     9. ``follow_ups`` is a list (normalisation handles length; validated here
        only for type).
     10. ``scoring_hint`` is a non-empty string.
-    11. Category distribution matches ``_REQUIRED_DISTRIBUTION`` exactly.
 
     Args:
         questions: List of dicts to validate.
+        num_questions: Expected number of questions.
 
     Returns:
         A tuple ``(is_valid, reason)`` where ``is_valid`` is True only when
         all checks pass, and ``reason`` is an empty string on success or a
         human-readable failure description on failure.
     """
-    if len(questions) != TOTAL_QUESTIONS:
+    if len(questions) != num_questions:
         return False, (
-            f"Expected {TOTAL_QUESTIONS} questions, got {len(questions)}"
+            f"Expected {num_questions} questions, got {len(questions)}"
         )
 
     required_keys = {"id", "category", "question", "ideal_keywords",
@@ -383,9 +349,9 @@ def validate_questions(questions: list[dict]) -> tuple[bool, str]:
                 )
 
         diff = q["difficulty"]
-        if not isinstance(diff, int) or not (1 <= diff <= TOTAL_QUESTIONS):
+        if not isinstance(diff, int) or not (1 <= diff <= num_questions):
             return False, (
-                f"Question[{i}] 'difficulty' must be int 1-{TOTAL_QUESTIONS}, got {diff!r}"
+                f"Question[{i}] 'difficulty' must be int 1-{num_questions}, got {diff!r}"
             )
 
         if not isinstance(q["follow_ups"], list):
@@ -393,14 +359,6 @@ def validate_questions(questions: list[dict]) -> tuple[bool, str]:
 
         if not isinstance(q["scoring_hint"], str) or not q["scoring_hint"].strip():
             return False, f"Question[{i}] 'scoring_hint' must be a non-empty string"
-
-    # Distribution check
-    if not _distribution_is_valid(questions):
-        actual = _get_distribution(questions)
-        return False, (
-            f"Category distribution mismatch. "
-            f"Expected {_REQUIRED_DISTRIBUTION}, got {actual}"
-        )
 
     return True, ""
 
@@ -414,8 +372,9 @@ def generate_questions(
     research_data: dict,
     session_id: str,
     api_key: str,
+    num_questions: int = TOTAL_QUESTIONS,
 ) -> list[dict]:
-    """Generate exactly 10 company-specific interview questions from researcher output.
+    """Generate exactly num_questions company-specific interview questions from researcher output.
 
     Pipeline
     --------
@@ -429,7 +388,7 @@ def generate_questions(
        incorporating compressed research, call ``_safe_llm_call`` with
        ``MAX_TOKENS_COMPLEX``.
     5. **Count check with retry** — if the ``"questions"`` list length ≠
-       ``TOTAL_QUESTIONS``, append a corrective instruction, sleep
+       ``num_questions``, append a corrective instruction, sleep
        ``RATE_LIMIT_SLEEP``, and retry once.  Raise ``QuestionGenerationError``
        if the count is still wrong after retry.
     6. **Structural validation** — call ``validate_questions``.  On failure,
@@ -439,7 +398,7 @@ def generate_questions(
        ``_assign_ids_and_difficulties``, then normalise follow-ups on every
        question via ``_normalize_follow_ups``.
     8. **Database save** — call ``save_questions(session_id, questions)``.
-    9. **Return** the validated, normalised list of 10 Question_Dict objects.
+    9. **Return** the validated, normalised list of Question_Dict objects.
 
     Args:
         research_data: Validated Researcher output dict with at least these 8
@@ -450,19 +409,20 @@ def generate_questions(
         session_id: UUID string identifying the current interview session.
             Passed directly to ``save_questions``.
         api_key: Gemini API key for this invocation.  Never logged or hardcoded.
+        num_questions: Number of questions to generate (2–15).
 
     Returns:
-        A list of exactly ``TOTAL_QUESTIONS`` validated Question_Dict objects,
+        A list of exactly ``num_questions`` validated Question_Dict objects,
         each containing exactly these 7 keys: ``id`` (str, UUID4),
         ``category`` (str), ``question`` (str), ``ideal_keywords`` (list[str]),
-        ``difficulty`` (int 1–10), ``follow_ups`` (list of exactly
+        ``difficulty`` (int 1–num_questions), ``follow_ups`` (list of exactly
         ``FOLLOW_UP_COUNT`` str), ``scoring_hint`` (str).
 
     Raises:
         QuestionGenerationError: On any of the following conditions:
             - ``research_data`` is missing required keys or ``api_key`` is empty.
             - The LLM fails to return valid JSON after 2 attempts.
-            - The ``"questions"`` list length ≠ ``TOTAL_QUESTIONS`` after retry.
+            - The ``"questions"`` list length ≠ ``num_questions`` after retry.
             - Structural validation fails after retry.
             - Database write fails.
     """
@@ -498,8 +458,8 @@ def generate_questions(
     # ------------------------------------------------------------------
     client = genai.Client(api_key=api_key)
 
-    # Build system prompt with TOTAL_QUESTIONS substituted
-    system = SYSTEM_PROMPT.format(total=TOTAL_QUESTIONS)
+    # Build system prompt with num_questions substituted
+    system = SYSTEM_PROMPT.format(total=num_questions)
 
     # Detect error_flag to adjust instruction tone and strip company name
     error_flag = research_data.get("error_flag", False)
@@ -519,11 +479,11 @@ def generate_questions(
         )
 
     user_prompt = (
-        f"Generate exactly {TOTAL_QUESTIONS} interview questions based on this research data.\n\n"
+        f"Generate exactly {num_questions} interview questions based on this research data.\n\n"
         f"Research data (compressed): {prompt_compressed}\n\n"
         f"{company_instruction}\n\n"
-        f"Remember: 4 technical, 3 behavioral, 2 situational, 1 curveball. "
-        f"Difficulty must increase from 1 (Q1) to {TOTAL_QUESTIONS} (Q{TOTAL_QUESTIONS})."
+        f"Remember: distribute categories appropriately across {num_questions} questions. "
+        f"Difficulty must increase from 1 (Q1) to {num_questions} (Q{num_questions})."
     )
 
     # ------------------------------------------------------------------
@@ -557,7 +517,7 @@ def generate_questions(
                 current_prompt = (
                     user_prompt
                     + f"\n\nCRITICAL: Your response MUST be a JSON object with a "
-                    f"'questions' key containing exactly {TOTAL_QUESTIONS} question objects. "
+                    f"'questions' key containing exactly {num_questions} question objects. "
                     f"RETURN ONLY RAW JSON. NO TEXT BEFORE OR AFTER."
                 )
                 continue
@@ -568,9 +528,9 @@ def generate_questions(
         questions = raw_response["questions"]
 
         # Step 5: Count check
-        if len(questions) != TOTAL_QUESTIONS:
+        if len(questions) != num_questions:
             failure_reason = (
-                f"wrong question count: expected {TOTAL_QUESTIONS}, "
+                f"wrong question count: expected {num_questions}, "
                 f"got {len(questions)}"
             )
             if attempt == 0:
@@ -578,7 +538,7 @@ def generate_questions(
                 current_prompt = (
                     user_prompt
                     + f"\n\nCRITICAL: You returned {len(questions)} questions. "
-                    f"You MUST return EXACTLY {TOTAL_QUESTIONS} questions. "
+                    f"You MUST return EXACTLY {num_questions} questions. "
                     f"RETURN ONLY RAW JSON. NO TEXT BEFORE OR AFTER."
                 )
                 continue
@@ -587,14 +547,14 @@ def generate_questions(
             )
 
         # Step 6: Structural + distribution validation
-        is_valid, reason = validate_questions(questions)
+        is_valid, reason = validate_questions(questions, num_questions)
         if not is_valid:
             if attempt == 0:
                 print(f"[QuestionGenerator] Validation failed: {reason}, retrying...")
                 current_prompt = (
                     user_prompt
                     + f"\n\nCRITICAL: Validation failed — {reason}. "
-                    f"Fix all issues and return EXACTLY {TOTAL_QUESTIONS} valid questions. "
+                    f"Fix all issues and return EXACTLY {num_questions} valid questions. "
                     f"RETURN ONLY RAW JSON. NO TEXT BEFORE OR AFTER."
                 )
                 continue

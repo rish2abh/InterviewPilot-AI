@@ -2,7 +2,7 @@
 agents/coach.py — Coach Agent for the Mock Interview Stress Tester.
 
 Exposes one public function:
-- generate_report: produces a final performance report after all 10 questions
+- generate_report: produces a final performance report after all questions
   are answered and evaluated. Returns a validated 11-key Report_Dict.
 
 The Coach Agent compresses answer data, makes exactly one LLM call to Gemini,
@@ -204,13 +204,12 @@ def _compress_answers(answers: list[dict]) -> list[dict]:
 
 def _safe_llm_call(prompt: str, system: str, client: genai.Client, max_tokens: int, agent_name: str) -> dict:
     """Call the Gemini model with retry logic for JSON parse failures and API errors."""
-    for attempt in range(2):
+    for attempt in range(3):
         try:
             config = types.GenerateContentConfig(
                 system_instruction=system,
                 max_output_tokens=max_tokens,
                 response_mime_type="application/json",
-                thinking_config=types.ThinkingConfig(thinking_budget=0),
             )
             response = client.models.generate_content(
                 model=GEMINI_MODEL,
@@ -231,15 +230,26 @@ def _safe_llm_call(prompt: str, system: str, client: genai.Client, max_tokens: i
             return result
         except json.JSONDecodeError as e:
             print(f"[{agent_name}] JSON fail attempt {attempt+1}: {e}")
-            if attempt == 0:
+            if attempt < 2:
                 time.sleep(RATE_LIMIT_SLEEP)
-                prompt += "\n\nRETURN ONLY RAW JSON. NO TEXT BEFORE OR AFTER."
+                if attempt == 0:
+                    prompt += "\n\nRETURN ONLY RAW JSON. NO TEXT BEFORE OR AFTER."
             else:
-                raise ValueError(f"{agent_name} failed after 2 attempts")
+                raise ValueError(f"{agent_name} failed after 3 attempts")
         except Exception as e:
+            error_str = str(e)
             print(f"[{agent_name}] API error attempt {attempt+1}: {e}")
-            if attempt == 0:
-                time.sleep(ERROR_RETRY_SLEEP)
+            if attempt < 2:
+                if "429" in error_str:
+                    retry_match = re.search(r"retry in (\d+(?:\.\d+)?)s", error_str, re.IGNORECASE)
+                    if retry_match:
+                        wait_time = int(float(retry_match.group(1))) + 2
+                    else:
+                        wait_time = 30 * (attempt + 1)
+                    print(f"[{agent_name}] Rate limited, waiting {wait_time}s...")
+                    time.sleep(wait_time)
+                else:
+                    time.sleep(ERROR_RETRY_SLEEP)
             else:
                 raise
 

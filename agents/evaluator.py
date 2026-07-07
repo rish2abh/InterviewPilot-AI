@@ -88,12 +88,13 @@ Return ONLY a JSON object. No markdown. No explanation. No text before or after.
 def _safe_llm_call(prompt: str, system: str, client: genai.Client, max_tokens: int, agent_name: str) -> dict:
     """Call the Gemini model with retry logic for JSON parse failures and API errors.
 
-    Attempts the call up to 2 times:
-    - On a JSON parse failure at attempt 1: waits 4 seconds, appends a corrective
-      instruction to the prompt, and retries.
-    - On a JSON parse failure at attempt 2: raises ValueError.
-    - On any other exception at attempt 1: waits 8 seconds and retries.
-    - On any other exception at attempt 2: re-raises the original exception.
+    Attempts the call up to 3 times:
+    - On a JSON parse failure: waits RATE_LIMIT_SLEEP seconds, appends a
+      corrective instruction, and retries. On attempt 3, increases token budget.
+    - On a 429 rate-limit error: parses the suggested retry delay from the
+      error message and waits accordingly. Falls back to 30s exponential backoff.
+    - On any other API error: waits ERROR_RETRY_SLEEP seconds and retries.
+    - After all attempts exhausted: raises ValueError (JSON) or re-raises.
 
     Token usage is printed to stdout on success in the format:
     ``[{agent_name}] Success. Tokens: {usage_metadata}``
@@ -109,22 +110,29 @@ def _safe_llm_call(prompt: str, system: str, client: genai.Client, max_tokens: i
         A Python dict parsed from the model's JSON response.
 
     Raises:
-        ValueError: If JSON parsing fails on both attempts.
-        Exception: Any non-JSON exception that persists after the single retry.
+        ValueError: If JSON parsing fails on all attempts.
+        Exception: Any non-JSON/non-429 exception that persists after retries.
     """
-    for attempt in range(2):
+    max_attempts: int = 3
+    current_max_tokens: int = max_tokens
+
+    for attempt in range(max_attempts):
         try:
             config = types.GenerateContentConfig(
                 system_instruction=system,
-                max_output_tokens=max_tokens,
+                max_output_tokens=current_max_tokens,
                 response_mime_type="application/json",
-                thinking_config=types.ThinkingConfig(thinking_budget=0),
             )
             response = client.models.generate_content(
                 model=GEMINI_MODEL,
                 contents=prompt,
                 config=config,
             )
+            # Guard: empty or None response text (can happen on token exhaustion)
+            if not response.text:
+                raise json.JSONDecodeError(
+                    "Empty response from model", "", 0
+                )
             text = response.text.strip()
             # Extract content from code fences if present
             json_fence_match = re.search(r"```json\s*(.*?)```", text, re.DOTALL)
@@ -139,15 +147,30 @@ def _safe_llm_call(prompt: str, system: str, client: genai.Client, max_tokens: i
             return result
         except json.JSONDecodeError as e:
             print(f"[{agent_name}] JSON fail attempt {attempt+1}: {e}")
-            if attempt == 0:
+            if attempt < max_attempts - 1:
                 time.sleep(RATE_LIMIT_SLEEP)
-                prompt += "\n\nRETURN ONLY RAW JSON. NO TEXT BEFORE OR AFTER."
+                if attempt == 0:
+                    prompt += "\n\nRETURN ONLY RAW JSON. NO TEXT BEFORE OR AFTER. Keep feedback under 150 characters."
+                else:
+                    # Increase token budget on later retries for truncation issues
+                    current_max_tokens = max_tokens + 500
             else:
-                raise ValueError(f"{agent_name} failed after 2 attempts")
+                raise ValueError(f"{agent_name} failed after {max_attempts} attempts")
         except Exception as e:
+            error_str = str(e)
             print(f"[{agent_name}] API error attempt {attempt+1}: {e}")
-            if attempt == 0:
-                time.sleep(ERROR_RETRY_SLEEP)
+            if attempt < max_attempts - 1:
+                # For 429 errors, parse and respect the suggested retry delay
+                if "429" in error_str:
+                    retry_match = re.search(r"retry in (\d+(?:\.\d+)?)s", error_str, re.IGNORECASE)
+                    if retry_match:
+                        wait_time = int(float(retry_match.group(1))) + 2
+                    else:
+                        wait_time = 30 * (attempt + 1)
+                    print(f"[{agent_name}] Rate limited, waiting {wait_time}s...")
+                    time.sleep(wait_time)
+                else:
+                    time.sleep(ERROR_RETRY_SLEEP)
             else:
                 raise
 

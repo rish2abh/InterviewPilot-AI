@@ -7,7 +7,7 @@
         "@modelcontextprotocol/server-filesystem",
         "C:\\Users\\ASUS\\Desktop\\Projects\\Mock Test"
       ],
-      "disabled": true,
+      "disabled": false,
       "autoApprove": [
         "read_file",
         "list_directory",
@@ -21,7 +21,7 @@
         "-y",
         "@modelcontextprotocol/server-memory"
       ],
-      "disabled": true,
+      "disabled": false,
       "autoApprove": [
         "create_entities",
         "create_relations",
@@ -38,7 +38,7 @@
         "--db-path",
         "C:\\Users\\ASUS\\Desktop\\Projects\\Mock Test\\interview_sessions.db"
       ],
-      "disabled": true,
+      "disabled": false,
       "autoApprove": [
         "read_query",
         "list_tables",

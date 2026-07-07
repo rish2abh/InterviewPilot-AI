@@ -35,13 +35,13 @@ GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
 # ---------------------------------------------------------------------------
 
 # The only permitted model for every LLM call in this project.
-GEMINI_MODEL: str = "gemini-2.5-flash"
+GEMINI_MODEL: str = "gemini-2.0-flash"
 
 # Max output tokens for simple/fast agents (Evaluator).
-MAX_TOKENS_SIMPLE: int = 1000
+MAX_TOKENS_SIMPLE: int = 1500
 
 # Max output tokens for complex generation agents (Researcher, QuestionGenerator).
-MAX_TOKENS_COMPLEX: int = 3000
+MAX_TOKENS_COMPLEX: int = 5000
 
 # Max output tokens for the long-form final report (Coach).
 MAX_TOKENS_REPORT: int = 3000
@@ -54,7 +54,7 @@ MAX_TOKENS_REPORT: int = 3000
 RATE_LIMIT_SLEEP: int = 4
 
 # Seconds to sleep before retrying after a non-JSON API / network error.
-ERROR_RETRY_SLEEP: int = 8
+ERROR_RETRY_SLEEP: int = 35
 
 # ---------------------------------------------------------------------------
 # 4. Answer Evaluation Thresholds
@@ -78,8 +78,14 @@ MAX_FOLLOW_UPS: int = 2
 # 5. Session / Question Rules
 # ---------------------------------------------------------------------------
 
-# Every session always has exactly this many interview questions.
-TOTAL_QUESTIONS: int = 10
+# Default number of interview questions per session.
+TOTAL_QUESTIONS: int = 5
+
+# Minimum number of questions a user can select.
+MIN_QUESTIONS: int = 2
+
+# Maximum number of questions a user can select.
+MAX_QUESTIONS: int = 15
 
 # Minimum character length for a valid question or follow-up string.
 MIN_QUESTION_LENGTH: int = 20
@@ -91,15 +97,16 @@ FOLLOW_UP_COUNT: int = 2
 # 6. Hiring Probability Bands
 # ---------------------------------------------------------------------------
 
-# Maximum possible aggregate score across all questions (10 questions × 20 pts).
-MAX_TOTAL_SCORE: int = 200
+# Maximum possible aggregate score across all questions (num_questions × 20 pts).
+# This is the default for 5 questions; actual max is computed dynamically.
+MAX_TOTAL_SCORE: int = 100
 
 # Aggregate score strictly below this → hiring probability "Low".
-HIRING_LOW_MAX: int = 80
+HIRING_LOW_MAX: int = 40
 
 # Aggregate score strictly above this → hiring probability "High".
 # Scores in [HIRING_LOW_MAX, HIRING_HIGH_MIN] → "Medium".
-HIRING_HIGH_MIN: int = 140
+HIRING_HIGH_MIN: int = 70
 
 # ---------------------------------------------------------------------------
 # 7. Database
