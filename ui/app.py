@@ -680,7 +680,7 @@ def _render_interview_screen(session_id: str) -> None:
         return
 
     # Display question info (only safe fields: question, category, id)
-    st.caption(f"Question {question_dict['id']} of {num_questions}")
+    st.caption(f"Question {question_dict['difficulty']} of {num_questions}")
     st.caption(f"Category: {question_dict['category']}")
     st.subheader(question_dict["question"])
 

@@ -251,13 +251,13 @@ class TestEvaluateAnswer:
     @patch("agents.evaluator._safe_llm_call")
     @patch("agents.evaluator.time.sleep")
     def test_rate_limit_sleep_called_on_full_path(self, mock_sleep, mock_llm):
-        """evaluate_answer must call time.sleep(RATE_LIMIT_SLEEP) before LLM."""
+        """evaluate_answer must NOT call time.sleep — rate limiting is orchestrator-owned."""
         mock_llm.return_value = make_valid_raw_response()
         evaluate_answer(
             SAMPLE_QUESTION, SAMPLE_KEYWORDS, SAMPLE_HINT,
             FULL_ANSWER, "dummy_key",
         )
-        mock_sleep.assert_called_once_with(RATE_LIMIT_SLEEP)
+        mock_sleep.assert_not_called()
 
     # ------------------------------------------------------------------
     # Test 4: LLM called exactly once per invocation on full path

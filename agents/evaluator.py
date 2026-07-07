@@ -268,20 +268,20 @@ def evaluate_answer(
     and returns a fully validated Evaluation_Dict with exactly 6 keys.
 
     The function short-circuits immediately for answers below MIN_ANSWER_LENGTH
-    without making any LLM call or sleeping.  For answers that pass the length
-    check, the pipeline is:
+    without making any LLM call.  For answers that pass the length check, the
+    pipeline is:
 
       1. Length check — return Penalty_Dict instantly if too short.
-      2. Rate-limit sleep — always sleep RATE_LIMIT_SLEEP seconds before the
-         LLM call (the evaluator is never the first agent in the orchestrator
-         flow, so a delay is always required).
-      3. LLM call — configure the Gemini client with the provided api_key,
+      2. LLM call — configure the Gemini client with the provided api_key,
          build the user prompt from the four dynamic inputs, and delegate to
          _safe_llm_call.
-      4–12. Post-processing pipeline:
+      3–11. Post-processing pipeline:
          subscore clamping, total recalculation, verdict derivation, off-topic
          correction, feedback enforcement, missing-keywords filtering,
          trigger_follow_up assignment, final validation, and return.
+
+    NOTE: Rate-limit sleeping is NOT handled here — it is the orchestrator's
+    responsibility to sleep before calling this function.
 
     Args:
         question: The interview question text shown to the candidate.
@@ -316,12 +316,7 @@ def evaluate_answer(
         return _build_penalty_dict(ideal_keywords)
 
     # ------------------------------------------------------------------
-    # Step 2: Rate Limit Sleep
-    # ------------------------------------------------------------------
-    time.sleep(RATE_LIMIT_SLEEP)
-
-    # ------------------------------------------------------------------
-    # Step 3: LLM Call
+    # Step 2: LLM Call
     # ------------------------------------------------------------------
     client = genai.Client(api_key=api_key)
     user_prompt = f"""Question: {question}
@@ -335,7 +330,7 @@ Candidate Answer:
     raw = _safe_llm_call(user_prompt, SYSTEM_PROMPT, client, MAX_TOKENS_SIMPLE, "Evaluator")
 
     # ------------------------------------------------------------------
-    # Step 4: Subscore Clamping
+    # Step 3: Subscore Clamping
     # ------------------------------------------------------------------
     # Note: round() uses banker's rounding (round-half-to-even), which only
     # differs from half-up rounding at exactly x.5 boundaries. For interview
@@ -349,14 +344,14 @@ Candidate Answer:
         raw["scores"][dim] = clamped
 
     # ------------------------------------------------------------------
-    # Step 5: Total Recalculation
+    # Step 4: Total Recalculation
     # ------------------------------------------------------------------
     total = sum(raw["scores"][dim] for dim in _SCORE_DIMS)
     if not (4 <= total <= 20):
         raise ValueError(f"Total out of range after clamping: {total}")
 
     # ------------------------------------------------------------------
-    # Step 6: Verdict Derivation
+    # Step 5: Verdict Derivation
     # ------------------------------------------------------------------
     if total < WEAK_SCORE_THRESHOLD:
         verdict = "weak"
@@ -366,7 +361,7 @@ Candidate Answer:
         verdict = "strong"
 
     # ------------------------------------------------------------------
-    # Step 7: Off-Topic Correction Flag (relevance == 1)
+    # Step 6: Off-Topic Correction Flag (relevance == 1)
     # ------------------------------------------------------------------
     off_topic = raw["scores"]["relevance"] == 1
     if off_topic:
@@ -377,7 +372,7 @@ Candidate Answer:
         )
 
     # ------------------------------------------------------------------
-    # Step 8: Feedback Enforcement
+    # Step 7: Feedback Enforcement
     # ------------------------------------------------------------------
     feedback = raw.get("feedback", "").strip()
     if not feedback:
@@ -392,16 +387,16 @@ Candidate Answer:
             feedback = feedback[:200]
             if feedback[-1] not in ".!?":
                 feedback += "."
-    # Apply off-topic feedback override if flagged in Step 7
+    # Apply off-topic feedback override if flagged in Step 6
     if off_topic:
         feedback = off_topic_feedback
 
     # ------------------------------------------------------------------
-    # Step 9: Missing Keywords Filtering
+    # Step 8: Missing Keywords Filtering
     # ------------------------------------------------------------------
     ideal_set = set(ideal_keywords)
     if off_topic:
-        # Off-topic answers miss all keywords (set in Step 7)
+        # Off-topic answers miss all keywords (set in Step 6)
         missing = off_topic_missing
     else:
         # Keep only items in ideal_keywords, deduplicated, preserving first-seen order
@@ -413,12 +408,12 @@ Candidate Answer:
                 seen.add(kw)
 
     # ------------------------------------------------------------------
-    # Step 10: trigger_follow_up Assignment
+    # Step 9: trigger_follow_up Assignment
     # ------------------------------------------------------------------
     trigger_follow_up = (verdict == "weak")
 
     # ------------------------------------------------------------------
-    # Step 11: Final Validation
+    # Step 10: Final Validation
     # ------------------------------------------------------------------
     # Check for required keys in LLM response (scores and missing_keywords)
     required_keys = {"scores", "total", "verdict", "feedback", "missing_keywords", "trigger_follow_up"}
@@ -458,6 +453,6 @@ Candidate Answer:
         raise ValueError(f"Validation failed for field 'trigger_follow_up': {result['trigger_follow_up']!r}")
 
     # ------------------------------------------------------------------
-    # Step 12: Return validated Evaluation_Dict
+    # Step 11: Return validated Evaluation_Dict
     # ------------------------------------------------------------------
     return result

@@ -754,6 +754,9 @@ def submit_answer(session_id: str, answer_text: str) -> dict:  # Consider splitt
         if question_dict is None:
             raise ValueError(f"Question at index {q_index} not found")
 
+        # Rate-limit sleep before evaluator LLM call (orchestrator-owned)
+        time.sleep(RATE_LIMIT_SLEEP)
+
         evaluation = evaluate_answer(
             question_dict["question"],
             question_dict["ideal_keywords"],
@@ -764,7 +767,7 @@ def submit_answer(session_id: str, answer_text: str) -> dict:  # Consider splitt
         _validate_evaluation_dict(evaluation)
 
         # Step 8: Save answer
-        save_answer(session_id, q_index, answer_text, evaluation)
+        save_answer(session_id, q_index, answer_text, evaluation, question_dict["category"])
 
         # Step 9: Determine next state
         result = dict(evaluation)  # copy for return

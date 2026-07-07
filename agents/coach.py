@@ -22,9 +22,6 @@ from core.config import (
     MAX_TOKENS_REPORT,
     RATE_LIMIT_SLEEP,
     ERROR_RETRY_SLEEP,
-    HIRING_LOW_MAX,
-    HIRING_HIGH_MIN,
-    MAX_TOTAL_SCORE,
     TOTAL_QUESTIONS,
 )
 
@@ -164,9 +161,10 @@ def generate_report(session_id: str, answers: list[dict], api_key: str, num_ques
     # ------------------------------------------------------------------
     # Step 7: Deterministic Overrides
     # ------------------------------------------------------------------
+    actual_max_score = num_questions * 20
     raw["overall_score"] = overall_score
-    raw["hiring_probability"] = _calculate_hiring_probability(overall_score)
-    raw["hiring_probability_percent"] = _calculate_hiring_percent(overall_score)
+    raw["hiring_probability"] = _calculate_hiring_probability(overall_score, actual_max_score)
+    raw["hiring_probability_percent"] = _calculate_hiring_percent(overall_score, actual_max_score)
 
     # ------------------------------------------------------------------
     # Step 8: Return validated Report_Dict
@@ -340,32 +338,39 @@ def _validate_report(report: dict) -> dict:
     return report
 
 
-def _calculate_hiring_probability(overall_score: int) -> str:
+def _calculate_hiring_probability(overall_score: int, max_score: int) -> str:
     """Deterministic band classification for hiring probability.
+
+    Uses percentage-based thresholds relative to the actual max score
+    so results are correct regardless of question count.
 
     Args:
         overall_score: The sum of all evaluation.total values.
+        max_score: The maximum possible score (num_questions * 20).
 
     Returns:
-        "Low" if score < HIRING_LOW_MAX,
-        "Medium" if HIRING_LOW_MAX <= score <= HIRING_HIGH_MIN,
-        "High" if score > HIRING_HIGH_MIN.
+        "Low" if score < 40% of max,
+        "Medium" if 40%-70% of max,
+        "High" if > 70% of max.
     """
-    if overall_score < HIRING_LOW_MAX:
+    low_max = max_score * 0.40
+    high_min = max_score * 0.70
+    if overall_score < low_max:
         return "Low"
-    elif overall_score <= HIRING_HIGH_MIN:
+    elif overall_score <= high_min:
         return "Medium"
     else:
         return "High"
 
 
-def _calculate_hiring_percent(overall_score: int) -> int:
+def _calculate_hiring_percent(overall_score: int, max_score: int) -> int:
     """Calculate hiring probability as a percentage, clamped to [0, 100].
 
     Args:
         overall_score: The sum of all evaluation.total values.
+        max_score: The maximum possible score (num_questions * 20).
 
     Returns:
-        round((overall_score / MAX_TOTAL_SCORE) * 100), clamped to [0, 100].
+        round((overall_score / max_score) * 100), clamped to [0, 100].
     """
-    return max(0, min(100, round((overall_score / MAX_TOTAL_SCORE) * 100)))
+    return max(0, min(100, round((overall_score / max_score) * 100)))

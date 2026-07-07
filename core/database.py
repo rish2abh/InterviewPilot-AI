@@ -157,6 +157,11 @@ def init_db() -> None:
                 PRIMARY KEY (session_id, q_index)
             )
         """)
+        # Migration: add category column to answers table for existing DBs
+        try:
+            conn.execute("ALTER TABLE answers ADD COLUMN category TEXT NOT NULL DEFAULT ''")
+        except Exception:
+            pass  # column already exists on fresh DB, safe to ignore
     conn.close()
 
 
@@ -318,6 +323,7 @@ def save_answer(
     q_index: int,
     answer_text: str,
     evaluation_dict: dict,
+    category: str = "",
 ) -> None:
     """Persist a user's answer and its evaluated result for one question.
 
@@ -333,6 +339,7 @@ def save_answer(
         q_index: Zero-based index of the question being answered (0–9).
         answer_text: The raw answer text submitted by the user.
         evaluation_dict: Validated Evaluator output dict with exactly 6 keys.
+        category: The question category (e.g. "technical", "behavioral").
 
     Returns:
         None
@@ -351,14 +358,15 @@ def save_answer(
         conn.execute(
             """
             INSERT OR REPLACE INTO answers
-                (session_id, q_index, answer_text, evaluation, answered_at)
-            VALUES (?, ?, ?, ?, ?)
+                (session_id, q_index, answer_text, evaluation, category, answered_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
                 q_index,
                 answer_text,
                 json.dumps(evaluation_dict),
+                category,
                 _now_iso(),
             ),
         )
@@ -386,7 +394,7 @@ def get_answers(session_id: str) -> list[dict]:
     conn = _get_connection()
     conn.row_factory = sqlite3.Row
     cursor = conn.execute(
-        "SELECT q_index, answer_text, evaluation, answered_at "
+        "SELECT q_index, answer_text, evaluation, category, answered_at "
         "FROM answers WHERE session_id = ? ORDER BY q_index ASC",
         (session_id,),
     )
@@ -398,6 +406,7 @@ def get_answers(session_id: str) -> list[dict]:
             "q_index": row["q_index"],
             "answer_text": row["answer_text"],
             "evaluation": json.loads(row["evaluation"]),
+            "category": row["category"],
             "answered_at": row["answered_at"],
         })
     return result
