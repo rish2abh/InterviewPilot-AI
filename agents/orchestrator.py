@@ -22,7 +22,6 @@ Design Principles:
 """
 
 import json
-import re
 import time
 import uuid
 from typing import Any
@@ -47,7 +46,6 @@ from core.config import (
     MAX_QUESTIONS,
     MAX_FOLLOW_UPS,
     RATE_LIMIT_SLEEP,
-    ERROR_RETRY_SLEEP,
     GEMINI_API_KEY,
 )
 
@@ -86,9 +84,6 @@ MAX_INPUT_LENGTH: int = 200
 
 # Maximum stored length for error reason strings (truncated beyond this).
 MAX_ERROR_REASON_LENGTH: int = 500
-
-# Maximum retry attempts for agent calls on 429 rate-limit errors.
-MAX_RETRIES: int = 3
 
 # ---------------------------------------------------------------------------
 # State transition map — defines all permitted (source → target) transitions.
@@ -214,43 +209,6 @@ def _handle_error(session_id: str, reason: str) -> None:
         # Outer guard: _handle_error must NEVER propagate exceptions.
         pass
 
-
-def _call_with_retry(agent_fn, args: tuple, session_id: str) -> Any:
-    """Call an agent function with automatic retry on 429 rate-limit errors.
-
-    Retries up to MAX_RETRIES times when the exception message contains '429'.
-    Parses the suggested retry delay from the error message when available,
-    otherwise falls back to exponential backoff starting at ERROR_RETRY_SLEEP.
-
-    Args:
-        agent_fn: The agent callable to invoke.
-        args: Positional arguments to unpack into agent_fn.
-        session_id: Session context (for logging/diagnostics).
-
-    Returns:
-        The return value of agent_fn(*args) on success.
-
-    Raises:
-        Exception: Re-raises the original exception if retries are exhausted
-                   or the error is not a 429.
-    """
-    for attempt in range(MAX_RETRIES + 1):
-        try:
-            return agent_fn(*args)
-        except Exception as e:
-            error_str = str(e)
-            if "429" in error_str and attempt < MAX_RETRIES:
-                # Try to parse retry delay from error message
-                retry_match = re.search(r"retry in (\d+(?:\.\d+)?)s", error_str, re.IGNORECASE)
-                if retry_match:
-                    wait_time = int(float(retry_match.group(1))) + 2
-                else:
-                    # Exponential backoff: 30s, 60s
-                    wait_time = 30 * (2 ** attempt)
-                print(f"[Orchestrator] 429 error, retry {attempt + 1}/{MAX_RETRIES} after {wait_time}s")
-                time.sleep(wait_time)
-            else:
-                raise
 
 # ---------------------------------------------------------------------------
 # Required-key sets for agent output contract validation.
@@ -486,12 +444,8 @@ def start_session(company: str, role: str, level: str, num_questions: int = TOTA
         # Step 5: Transition to RESEARCHING
         _transition(session_id, STATE_SETUP, STATE_RESEARCHING)
 
-        # Step 6: Call researcher with retry and validate
-        research_data = _call_with_retry(
-            research_company,
-            (company, role, level, GEMINI_API_KEY),
-            session_id,
-        )
+        # Step 6: Call researcher and validate
+        research_data = research_company(company, role, level, GEMINI_API_KEY)
         _validate_research_dict(research_data)
         save_research(session_id, research_data)
 
@@ -501,12 +455,8 @@ def start_session(company: str, role: str, level: str, num_questions: int = TOTA
         # Step 8: Transition to GENERATING
         _transition(session_id, STATE_RESEARCHING, STATE_GENERATING)
 
-        # Step 9: Call question generator with retry and validate
-        questions = _call_with_retry(
-            generate_questions,
-            (research_data, session_id, GEMINI_API_KEY, num_questions),
-            session_id,
-        )
+        # Step 9: Call question generator and validate
+        questions = generate_questions(research_data, session_id, GEMINI_API_KEY, num_questions)
         _validate_questions_list(questions, num_questions)
 
         # Step 10: Transition to READY
@@ -699,12 +649,8 @@ def generate_final_report(session_id: str) -> dict:
         # Step 5: Transition to REPORT
         _transition(session_id, session["state"], STATE_REPORT)
 
-        # Step 6: Call Coach agent with retry
-        report = _call_with_retry(
-            generate_report,
-            (session_id, answers),
-            session_id,
-        )
+        # Step 6: Call Coach agent
+        report = generate_report(session_id, answers, GEMINI_API_KEY)
 
         # Step 7: Validate report contract
         _validate_report_dict(report)
@@ -805,16 +751,12 @@ def submit_answer(session_id: str, answer_text: str) -> dict:  # Consider splitt
         if question_dict is None:
             raise ValueError(f"Question at index {q_index} not found")
 
-        evaluation = _call_with_retry(
-            evaluate_answer,
-            (
-                question_dict["question"],
-                question_dict["ideal_keywords"],
-                question_dict["scoring_hint"],
-                answer_text,
-                GEMINI_API_KEY,
-            ),
-            session_id,
+        evaluation = evaluate_answer(
+            question_dict["question"],
+            question_dict["ideal_keywords"],
+            question_dict["scoring_hint"],
+            answer_text,
+            GEMINI_API_KEY,
         )
         _validate_evaluation_dict(evaluation)
 

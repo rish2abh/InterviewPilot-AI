@@ -18,7 +18,6 @@ from google import genai
 from google.genai import types
 
 from core.config import (
-    GEMINI_API_KEY,
     GEMINI_MODEL,
     MAX_TOKENS_REPORT,
     RATE_LIMIT_SLEEP,
@@ -92,12 +91,13 @@ SYSTEM_PROMPT = (
 )
 
 
-def generate_report(session_id: str, answers: list[dict]) -> dict:  # Consider splitting this function
+def generate_report(session_id: str, answers: list[dict], api_key: str) -> dict:
     """Generate a final performance report for a completed interview session.
 
     Args:
         session_id: UUID string identifying the current interview session.
         answers: List of exactly TOTAL_QUESTIONS Answer_Dict objects.
+        api_key: The Gemini API key to use for the LLM call.
 
     Returns:
         A validated 11-key Report_Dict.
@@ -146,7 +146,7 @@ def generate_report(session_id: str, answers: list[dict]) -> dict:  # Consider s
     # ------------------------------------------------------------------
     # Step 5: Configure Gemini + Build Prompts
     # ------------------------------------------------------------------
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    client = genai.Client(api_key=api_key)
     compressed_json = json.dumps(compressed, separators=(',', ':'))
     user_prompt = (
         f"Generate a performance report for this completed mock interview session.\n\n"

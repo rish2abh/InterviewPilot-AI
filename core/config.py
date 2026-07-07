@@ -41,17 +41,17 @@ GEMINI_MODEL: str = "gemini-2.0-flash"
 MAX_TOKENS_SIMPLE: int = 1500
 
 # Max output tokens for complex generation agents (Researcher, QuestionGenerator).
-MAX_TOKENS_COMPLEX: int = 5000
+MAX_TOKENS_COMPLEX: int = 2000
 
 # Max output tokens for the long-form final report (Coach).
-MAX_TOKENS_REPORT: int = 3000
+MAX_TOKENS_REPORT: int = 2000
 
 # ---------------------------------------------------------------------------
 # 3. Rate Limiting
 # ---------------------------------------------------------------------------
 
 # Seconds to sleep between consecutive LLM calls to respect Gemini rate limits.
-RATE_LIMIT_SLEEP: int = 4
+RATE_LIMIT_SLEEP: int = 8
 
 # Seconds to sleep before retrying after a non-JSON API / network error.
 ERROR_RETRY_SLEEP: int = 35
