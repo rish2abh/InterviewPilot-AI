@@ -250,7 +250,7 @@ class TestEvaluateAnswer:
 
     @patch("agents.evaluator._safe_llm_call")
     @patch("agents.evaluator.time.sleep")
-    def test_rate_limit_sleep_called_on_full_path(self, mock_sleep, mock_llm):
+    def test_rate_limit_sleep_not_called_on_full_path(self, mock_sleep, mock_llm):
         """evaluate_answer must NOT call time.sleep — rate limiting is orchestrator-owned."""
         mock_llm.return_value = make_valid_raw_response()
         evaluate_answer(
