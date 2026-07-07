@@ -23,6 +23,7 @@ from core.config import (
     MAX_TOKENS_COMPLEX,
     RATE_LIMIT_SLEEP,
     ERROR_RETRY_SLEEP,
+    USE_SEARCH_GROUNDING,
 )
 
 # ---------------------------------------------------------------------------
@@ -203,6 +204,14 @@ def _safe_llm_call(
                 else:
                     # No fences found — use the text as-is (already stripped)
                     pass
+            # Aggressively extract JSON object: strip everything before the
+            # first '{' and after the last '}'. This handles cases where the
+            # model returns prose around the JSON (common when search grounding
+            # is active and response_mime_type cannot be used).
+            start = text.find("{")
+            end = text.rfind("}")
+            if start != -1 and end != -1:
+                text = text[start : end + 1]
             result = json.loads(text)
             print(f"[{agent_name}] Success. Tokens: {response.usage_metadata}")
             return result
@@ -375,22 +384,20 @@ def research_company(  # Consider splitting this function
 
     Pipeline:
     1. Validate and sanitize ``company`` and ``role`` inputs.
-    2. Sleep ``RATE_LIMIT_SLEEP`` seconds if a prior LLM call preceded this one
-       in the session.  The caller (orchestrator) is responsible for passing
-       ``is_first_call=True`` only when no prior LLM call has been made;
-       this function always sleeps to be safe, as the researcher is never the
-       first step when called in a real session (SETUP state precedes it).
-    3. Configure Gemini with ``api_key`` and build a ``GenerativeModel`` with
+    2. Configure Gemini with ``api_key`` and build a ``GenerativeModel`` with
        Search Grounding enabled via ``google_search_retrieval`` tool.
-    4. Build a search-optimised prompt using the sanitized inputs and the
+    3. Build a search-optimised prompt using the sanitized inputs and the
        query format defined in the spec:
        ``"{company} {role} interview questions experience {level} 2024 2025"``
-    5. Delegate the LLM call to ``_safe_llm_call``.
-    6. Validate and strip the returned dict via ``_validate_research_dict``.
-    7. Return the validated Research_Dict.
-    8. On any unrecoverable exception (API failure after retries, or validation
+    4. Delegate the LLM call to ``_safe_llm_call``.
+    5. Validate and strip the returned dict via ``_validate_research_dict``.
+    6. Return the validated Research_Dict.
+    7. On any unrecoverable exception (API failure after retries, or validation
        failure), return a ``Default_Dict`` via ``_build_default_dict`` with
        ``error_flag=True`` rather than crashing.
+
+    Note: Rate-limit pacing between consecutive agent LLM calls is owned by
+    the orchestrator, not by individual agents.
 
     Args:
         company: Company name as entered by the user (1–100 chars, non-empty).
@@ -426,22 +433,14 @@ def research_company(  # Consider splitting this function
     clean_role = _sanitize_input(role, "role")
 
     # ------------------------------------------------------------------
-    # Step 2: Rate-limit sleep
-    # The researcher always follows SETUP in the orchestrator state machine,
-    # so there will always be session-init work before this call. Sleep here
-    # unconditionally to respect the 4-second inter-call rule.
-    # ------------------------------------------------------------------
-    time.sleep(RATE_LIMIT_SLEEP)
-
-    # ------------------------------------------------------------------
-    # Step 3: Configure Gemini with Search Grounding
+    # Step 2: Configure Gemini with Search Grounding
     # Search grounding is enabled ONLY for the researcher (per tech.md).
     # ------------------------------------------------------------------
     client = genai.Client(api_key=api_key)
-    search_tool = types.Tool(google_search=types.GoogleSearch())
+    tools = [types.Tool(google_search=types.GoogleSearch())] if USE_SEARCH_GROUNDING else None
 
     # ------------------------------------------------------------------
-    # Step 4: Build the search-optimised prompt
+    # Step 2: Build the search-optimised prompt
     # Query format from spec: "{company} {role} interview questions
     # experience {level} 2024 2025"
     # ------------------------------------------------------------------
@@ -459,7 +458,7 @@ Based on your search results, return a JSON object describing this company's int
 Return ONLY a JSON object with exactly these 8 keys: company, role, interview_rounds, key_topics, difficulty, culture_keywords, known_question_types, red_flags_to_test."""
 
     # ------------------------------------------------------------------
-    # Steps 5–7: LLM call → validate → return
+    # Steps 3–5: LLM call → validate → return
     # ------------------------------------------------------------------
     try:
         raw = _safe_llm_call(
@@ -468,14 +467,14 @@ Return ONLY a JSON object with exactly these 8 keys: company, role, interview_ro
             client=client,
             max_tokens=MAX_TOKENS_COMPLEX,
             agent_name="Researcher",
-            tools=[search_tool],
+            tools=tools,
         )
         validated = _validate_research_dict(raw)
         return validated
 
     except Exception as e:
         # ------------------------------------------------------------------
-        # Step 8: Unrecoverable failure — return Default_Dict, never crash
+        # Step 4: Unrecoverable failure — return Default_Dict, never crash
         # (Covers both API errors re-raised by _safe_llm_call and
         # ValueError from _validate_research_dict)
         # ------------------------------------------------------------------

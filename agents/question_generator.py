@@ -380,25 +380,26 @@ def generate_questions(
     --------
     1. **Input validation** — verify ``research_data`` contains all 8 required
        Researcher keys and that ``api_key`` is non-empty.
-    2. **Rate-limit sleep** — sleep ``RATE_LIMIT_SLEEP`` seconds (the researcher
-       LLM call always precedes this one in the orchestrator flow).
-    3. **Research compression** — serialize ``research_data`` with
+    2. **Research compression** — serialize ``research_data`` with
        ``json.dumps(research_data, separators=(',',':'))`` to minimise tokens.
-    4. **LLM call** — configure Gemini (no search grounding), build the prompt
+    3. **LLM call** — configure Gemini (no search grounding), build the prompt
        incorporating compressed research, call ``_safe_llm_call`` with
        ``MAX_TOKENS_COMPLEX``.
-    5. **Count check with retry** — if the ``"questions"`` list length ≠
+    4. **Count check with retry** — if the ``"questions"`` list length ≠
        ``num_questions``, append a corrective instruction, sleep
        ``RATE_LIMIT_SLEEP``, and retry once.  Raise ``QuestionGenerationError``
        if the count is still wrong after retry.
-    6. **Structural validation** — call ``validate_questions``.  On failure,
+    5. **Structural validation** — call ``validate_questions``.  On failure,
        append a corrective instruction and retry once (with sleep).  Raise
        ``QuestionGenerationError`` on second failure.
-    7. **Post-processing** — assign UUIDs and sequential difficulties via
+    6. **Post-processing** — assign UUIDs and sequential difficulties via
        ``_assign_ids_and_difficulties``, then normalise follow-ups on every
        question via ``_normalize_follow_ups``.
-    8. **Database save** — call ``save_questions(session_id, questions)``.
-    9. **Return** the validated, normalised list of Question_Dict objects.
+    7. **Database save** — call ``save_questions(session_id, questions)``.
+    8. **Return** the validated, normalised list of Question_Dict objects.
+
+    Note: Rate-limit pacing between consecutive agent LLM calls is owned by
+    the orchestrator, not by individual agents.
 
     Args:
         research_data: Validated Researcher output dict with at least these 8
@@ -444,17 +445,12 @@ def generate_questions(
         )
 
     # ------------------------------------------------------------------
-    # Step 2: Rate-limit sleep (researcher call always precedes this)
-    # ------------------------------------------------------------------
-    time.sleep(RATE_LIMIT_SLEEP)
-
-    # ------------------------------------------------------------------
-    # Step 3: Compress research_data (token optimisation per spec)
+    # Step 2: Compress research_data (token optimisation per spec)
     # ------------------------------------------------------------------
     compressed_research = json.dumps(research_data, separators=(",", ":"))
 
     # ------------------------------------------------------------------
-    # Step 4: Configure Gemini (no search grounding — researcher only)
+    # Step 3: Configure Gemini (no search grounding — researcher only)
     # ------------------------------------------------------------------
     client = genai.Client(api_key=api_key)
 
@@ -487,7 +483,7 @@ def generate_questions(
     )
 
     # ------------------------------------------------------------------
-    # Steps 5–6: LLM call + count check + structural validation
+    # Steps 4–5: LLM call + count check + structural validation
     # Both share the same retry budget: 1 initial + 1 retry = 2 total.
     # _safe_llm_call handles its own JSON-parse retry internally.
     # Our outer loop handles count and structure failures.
@@ -566,7 +562,7 @@ def generate_questions(
         break
 
     # ------------------------------------------------------------------
-    # Step 7: Post-processing — assign UUIDs + sequential difficulties,
+    # Step 6: Post-processing — assign UUIDs + sequential difficulties,
     # then normalise follow-ups on every question.
     # ------------------------------------------------------------------
     questions = _assign_ids_and_difficulties(questions)
@@ -574,7 +570,7 @@ def generate_questions(
         _normalize_follow_ups(q)
 
     # ------------------------------------------------------------------
-    # Step 8: Persist all questions to SQLite before returning
+    # Step 7: Persist all questions to SQLite before returning
     # ------------------------------------------------------------------
     try:
         save_questions(session_id, questions)
@@ -584,6 +580,6 @@ def generate_questions(
         )
 
     # ------------------------------------------------------------------
-    # Step 9: Return validated, normalised, persisted question list
+    # Step 8: Return validated, normalised, persisted question list
     # ------------------------------------------------------------------
     return questions

@@ -649,8 +649,11 @@ def generate_final_report(session_id: str) -> dict:
         # Step 5: Transition to REPORT
         _transition(session_id, session["state"], STATE_REPORT)
 
-        # Step 6: Call Coach agent
-        report = generate_report(session_id, answers, GEMINI_API_KEY)
+        # Step 6: Rate-limit sleep before Coach LLM call
+        time.sleep(RATE_LIMIT_SLEEP)
+
+        # Step 7: Call Coach agent
+        report = generate_report(session_id, answers, GEMINI_API_KEY, num_questions)
 
         # Step 7: Validate report contract
         _validate_report_dict(report)

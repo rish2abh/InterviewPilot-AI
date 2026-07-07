@@ -50,6 +50,10 @@ MAX_TOKENS_REPORT: int = 2000
 # 3. Rate Limiting
 # ---------------------------------------------------------------------------
 
+# Whether to enable Gemini Search Grounding for the Researcher agent.
+# Set True only on paid tier — grounding adds 3,000–8,000 extra input tokens.
+USE_SEARCH_GROUNDING: bool = False
+
 # Seconds to sleep between consecutive LLM calls to respect Gemini rate limits.
 RATE_LIMIT_SLEEP: int = 8
 

@@ -91,13 +91,14 @@ SYSTEM_PROMPT = (
 )
 
 
-def generate_report(session_id: str, answers: list[dict], api_key: str) -> dict:
+def generate_report(session_id: str, answers: list[dict], api_key: str, num_questions: int = TOTAL_QUESTIONS) -> dict:  # Consider splitting this function
     """Generate a final performance report for a completed interview session.
 
     Args:
         session_id: UUID string identifying the current interview session.
-        answers: List of exactly TOTAL_QUESTIONS Answer_Dict objects.
+        answers: List of Answer_Dict objects matching num_questions count.
         api_key: The Gemini API key to use for the LLM call.
+        num_questions: Number of questions in this session (default TOTAL_QUESTIONS).
 
     Returns:
         A validated 11-key Report_Dict.
@@ -115,8 +116,8 @@ def generate_report(session_id: str, answers: list[dict], api_key: str) -> dict:
         raise ValueError("Coach: answers must be a list")
     if len(answers) == 0:
         raise ValueError("Coach: no answers were provided")
-    if len(answers) != TOTAL_QUESTIONS:
-        raise ValueError(f"Coach: expected {TOTAL_QUESTIONS} answers, got {len(answers)}")
+    if len(answers) != num_questions:
+        raise ValueError(f"Coach: expected {num_questions} answers, got {len(answers)}")
     for i, answer in enumerate(answers):
         if "category" not in answer or not isinstance(answer.get("category"), str) or not answer["category"].strip():
             raise ValueError(f"Coach: answer at index {i} has invalid or missing category")
@@ -139,12 +140,7 @@ def generate_report(session_id: str, answers: list[dict], api_key: str) -> dict:
     overall_score = sum(answer["evaluation"]["total"] for answer in answers)
 
     # ------------------------------------------------------------------
-    # Step 4: Rate Limit Sleep
-    # ------------------------------------------------------------------
-    time.sleep(RATE_LIMIT_SLEEP)
-
-    # ------------------------------------------------------------------
-    # Step 5: Configure Gemini + Build Prompts
+    # Step 4: Configure Gemini + Build Prompts
     # ------------------------------------------------------------------
     client = genai.Client(api_key=api_key)
     compressed_json = json.dumps(compressed, separators=(',', ':'))
@@ -156,24 +152,24 @@ def generate_report(session_id: str, answers: list[dict], api_key: str) -> dict:
     )
 
     # ------------------------------------------------------------------
-    # Step 6: LLM Call
+    # Step 5: LLM Call
     # ------------------------------------------------------------------
     raw = _safe_llm_call(user_prompt, SYSTEM_PROMPT, client, MAX_TOKENS_REPORT, "Coach")
 
     # ------------------------------------------------------------------
-    # Step 7: Output Contract Validation
+    # Step 6: Output Contract Validation
     # ------------------------------------------------------------------
     raw = _validate_report(raw)
 
     # ------------------------------------------------------------------
-    # Step 8: Deterministic Overrides
+    # Step 7: Deterministic Overrides
     # ------------------------------------------------------------------
     raw["overall_score"] = overall_score
     raw["hiring_probability"] = _calculate_hiring_probability(overall_score)
     raw["hiring_probability_percent"] = _calculate_hiring_percent(overall_score)
 
     # ------------------------------------------------------------------
-    # Step 9: Return validated Report_Dict
+    # Step 8: Return validated Report_Dict
     # ------------------------------------------------------------------
     return raw
 
@@ -217,6 +213,8 @@ def _safe_llm_call(prompt: str, system: str, client: genai.Client, max_tokens: i
                 config=config,
             )
             text = response.text.strip()
+            if not text:
+                raise json.JSONDecodeError("Empty response", "", 0)
             # Extract content from code fences if present
             json_fence_match = re.search(r"```json\s*(.*?)```", text, re.DOTALL)
             if json_fence_match:
